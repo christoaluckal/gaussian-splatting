@@ -28,7 +28,7 @@ class Scene:
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
-        self.source2_path = '/home/christoa/Developer/summer2025/gsplats/gaussian-splatting/new_scene/model1'
+        self.source2_path = '/home/christoa/Developer/summer2025/gsplats/gaussian-splatting/new_scene/model2'
         self.loaded_iter = None
         self.gaussians = gaussians
         self.new_gaussians = copy.deepcopy(gaussians)
@@ -117,11 +117,13 @@ class Scene:
         self.new_gaussians.create_from_pcd(new_scene_info.point_cloud, new_scene_info.train_cameras, self.new_cameras_extent)
 
     def extend(self):
+        print(f"Number of Gaussians before extending: {self.gaussians._xyz.shape}")
         for k,v in self.train_cameras.items():
             self.train_cameras[k] = self.train_cameras[k] + self.new_train_cameras[k]
         for k,v in self.test_cameras.items():
             self.test_cameras[k] = self.test_cameras[k] + self.new_test_cameras[k]
         self.gaussians.concat_new_gaussian(self.new_gaussians)
+        print(f"Number of Gaussians after extending: {self.gaussians._xyz.shape}")
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
