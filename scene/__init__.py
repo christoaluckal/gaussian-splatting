@@ -17,6 +17,7 @@ from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+import copy
 
 class Scene:
 
@@ -27,8 +28,10 @@ class Scene:
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
+        self.source2_path = '/home/christoa/Developer/summer2025/gsplats/gaussian-splatting/new_scene/model1'
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.new_gaussians = copy.deepcopy(gaussians)
 
         if load_iteration:
             if load_iteration == -1:
@@ -81,6 +84,44 @@ class Scene:
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
+
+        self.create_2nd_set(resolution_scales, args)
+
+    def create_2nd_set(self,res_scales, args):
+        self.new_train_cameras = {}
+        self.new_test_cameras = {}
+        if os.path.exists(os.path.join(self.source2_path, "sparse")):
+            new_scene_info = sceneLoadTypeCallbacks["Colmap"](self.source2_path, "images", "", False, False)
+
+
+        # with open(new_scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+        #         dest_file.write(src_file.read())
+
+        camlist = []
+        json_cams = []
+        camlist.extend(new_scene_info.train_cameras)
+        for id, cam in enumerate(camlist):
+            json_cams.append(camera_to_JSON(id, cam))
+        with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
+            json.dump(json_cams, file)
+
+        random.shuffle(new_scene_info.train_cameras) 
+        self.new_cameras_extent = new_scene_info.nerf_normalization["radius"]
+
+        for resolution_scale in res_scales:
+            print("Loading Training Cameras")
+            self.new_train_cameras[resolution_scale] = cameraList_from_camInfos(new_scene_info.train_cameras, resolution_scale, args, new_scene_info.is_nerf_synthetic, False)
+            print("Loading Test Cameras")
+            self.new_test_cameras[resolution_scale] = cameraList_from_camInfos(new_scene_info.test_cameras, resolution_scale, args, new_scene_info.is_nerf_synthetic, True)
+
+        self.new_gaussians.create_from_pcd(new_scene_info.point_cloud, new_scene_info.train_cameras, self.new_cameras_extent)
+
+    def extend(self):
+        for k,v in self.train_cameras.items():
+            self.train_cameras[k] = self.train_cameras[k] + self.new_train_cameras[k]
+        for k,v in self.test_cameras.items():
+            self.test_cameras[k] = self.test_cameras[k] + self.new_test_cameras[k]
+        self.gaussians.concat_new_gaussian(self.new_gaussians)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

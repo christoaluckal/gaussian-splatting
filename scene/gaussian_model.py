@@ -401,7 +401,10 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
+        try:
+            self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
+        except:
+            self.tmp_radii = torch.cat((torch.zeros((self.get_xyz.shape[0])),new_tmp_radii))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
@@ -431,6 +434,21 @@ class GaussianModel:
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
+
+    def concat_new_gaussian(self, new_gauss: "GaussianModel"):
+        stds = new_gauss.get_scaling
+        means = torch.zeros((stds.size(0), 3),device="cuda")
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(new_gauss._rotation)
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + new_gauss.get_xyz
+        new_scaling = new_gauss.scaling_inverse_activation(new_gauss.get_scaling)
+        new_rotation = new_gauss._rotation
+        new_features_dc = new_gauss._features_dc
+        new_features_rest = new_gauss._features_rest
+        new_opacity = new_gauss._opacity
+        new_tmp_radii = torch.zeros((new_xyz.shape[0]))
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
+
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
