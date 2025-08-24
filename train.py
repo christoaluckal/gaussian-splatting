@@ -24,6 +24,7 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import pickle
 import time
+import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -75,6 +76,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     losses = []
     times = []
     num_gaussians = []
+    l1s = []
+    psnrs = []
     try:
         for iteration in range(first_iter, opt.iterations + 1):
             times.append(time.time_ns())
@@ -166,7 +169,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     progress_bar.close()
 
                 # Log and save
-                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+                l1,psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+                if l1 is not None:
+                    l1s.append(l1)
+                    psnrs.append(psnr)
                 if (iteration in saving_iterations):
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene.save(iteration)
@@ -219,7 +225,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         data_dict = {
             "losses": losses,
             "times": times,
-            "num_gaussians": num_gaussians
+            "num_gaussians": num_gaussians,
+            "l1s": l1s,
+            "psnrs": psnrs
         }
         pickle.dump(data_dict,f)
 
@@ -255,7 +263,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
         validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+                            #   {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]}
+                              )
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
@@ -285,6 +294,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
+        return l1_test, psnr_test
+    
+    return None, None
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
@@ -295,7 +308,8 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[9_000, 11_000, 30_000])
+    # parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 11_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=np.arange(1000,35000,5000,dtype=int))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[9_000, 11_000, 20_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)

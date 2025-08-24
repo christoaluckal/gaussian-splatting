@@ -4,8 +4,8 @@ import numpy as np
 
 plt.rcParams['font.size'] = 18
 
-base_pkl = 'base_r2.pkl'
-new_pkl = 'jug_trash_r2.pkl'
+base_pkl = 'base_r8.pkl'
+new_pkl = 'split_r8.pkl'
 
 base_data = None
 new_data = None
@@ -28,27 +28,67 @@ with open(new_pkl,'rb') as f:
     new_data = pickle.load(f)
 
 
-fig, axs = plt.subplots(2,1)
+fig, axs = plt.subplots(2,2)
 
-base_time = np.array(base_data['times'])/1e9
-base_time[:] = base_time[:] - base_time[0]
+def extract(data):
+    base_time = np.array(data['times'])/1e9
+    base_time[:] = base_time[:] - base_time[0]
+    base_loss = data['losses']
+    base_loss_sm = smooth(data['losses'],0.9)
+    base_l1 = data['l1s']
+    base_l1p = []
+    base_numg = data['num_gaussians']
+    for idx,l in enumerate(base_l1):
+        if type(l) != float:
+            base_l1p.append(l.item())
+    base_psnr = data['psnrs']
+    base_psnrp = []
+    for idx,l in enumerate(base_psnr):
+        if type(l) != float:
+            base_psnrp.append(l.item())
+    
+    idxs = np.arange(1000,31000,5000).reshape(-1,1)
+    base_l1p = np.array(base_l1p).reshape(-1,1)
+    base_l1p = np.concat((idxs,base_l1p),axis=1)
 
-new_time = np.array(new_data['times'])/1e9
-new_time[:] = new_time[:] - new_time[0]
+    base_psnrp = np.array(base_psnrp).reshape(-1,1)
+    base_psnrp = np.concat((idxs,base_psnrp),axis=1)
 
-base_loss_sm = smooth(base_data['losses'],0.9)
-comb_loss_sm = smooth(new_data['losses'],0.9)
+    return base_time, base_loss, base_loss_sm, base_l1p, base_psnrp, base_numg
 
-axs[0].set_title('Loss per iteration')
-axs[0].plot(base_data['losses'],c='tab:red',alpha=0.5)
-axs[0].plot(new_data['losses'],c='tab:blue',alpha=0.5)
-axs[0].plot(base_loss_sm,label=f"Base T:{base_time[-1]:0.2f} Loss sum:{np.sum(base_data['losses']):0.4f}",c='tab:red',alpha=1,linewidth=3)
-axs[0].plot(comb_loss_sm,label=f"Combined T:{new_time[-1]:0.2f}  Loss sum:{np.sum(new_data['losses']):0.4f}",c='tab:blue',alpha=1,linewidth=3)
-axs[0].legend()
+t1,loss1,loss1sm,l1loss1,psnr1,ng1 = extract(base_data)
+t2,loss2,loss2sm,l1loss2,psnr2,ng2 = extract(new_data)
 
-axs[1].set_title('Number of Gaussians')
-axs[1].plot(base_data['num_gaussians'],label='Base Gaussians',c='tab:red',alpha=0.5,linewidth=5)
-axs[1].plot(new_data['num_gaussians'],label='Combined Gaussians',c='tab:blue',alpha=0.5,linewidth=5)
-axs[1].legend()
+base_t = t1[-1]
+aug_t = t2[-1]
+base_loss_sum = np.sum(loss1)
+aug_loss_sum = np.sum(loss2)
 
+fig.suptitle(f"Base Time: {base_t:0.2f} Base Loss Sum:{base_loss_sum:0.2f}\n Aug Time: {aug_t:0.2f} Aug Loss Sum:{aug_loss_sum:0.2f}")
+
+axs[1,0].set_title('Loss per iteration')
+axs[1,0].plot(loss1,c='tab:red',alpha=0.5)
+axs[1,0].plot(loss2,c='tab:blue',alpha=0.5)
+axs[1,0].plot(loss1sm,label=f"Base",c='tab:red',alpha=1,linewidth=3)
+axs[1,0].plot(loss2sm,label=f"Augmented",c='tab:blue',alpha=1,linewidth=3)
+axs[1,0].legend()
+
+axs[0,0].set_title('Eval L1 Loss')
+axs[0,0].plot(l1loss1[:,0],l1loss1[:,1],label='Base',c='tab:red',linewidth=5)
+axs[0,0].plot(l1loss2[:,0],l1loss2[:,1],label='Augmented',c='tab:blue',linewidth=5)
+axs[0,0].scatter(l1loss1[:,0],l1loss1[:,1],c='tab:red',s=100)
+axs[0,0].scatter(l1loss2[:,0],l1loss2[:,1],c='tab:blue',s=100)
+axs[0,0].legend()
+
+axs[0,1].set_title('Eval PSNR')
+axs[0,1].plot(psnr1[:,0],psnr1[:,1],label='Base',c='tab:red',linewidth=5)
+axs[0,1].plot(psnr2[:,0],psnr2[:,1],label='Augmented',c='tab:blue',linewidth=5)
+axs[0,1].scatter(psnr1[:,0],psnr1[:,1],c='tab:red',s=100)
+axs[0,1].scatter(psnr2[:,0],psnr2[:,1],c='tab:blue',s=100)
+axs[0,1].legend()
+
+axs[1,1].set_title('Number of Gaussians')
+axs[1,1].plot(ng1,label='Base',c='tab:red',linewidth=5)
+axs[1,1].plot(ng2,label='Augmented',c='tab:blue',linewidth=5)
+axs[1,1].legend()
 plt.show()

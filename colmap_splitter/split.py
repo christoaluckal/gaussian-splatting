@@ -3,6 +3,7 @@ import os
 import pprint
 import shutil
 import argparse
+import random
 
 class Splitter:
     def __init__(self,
@@ -43,21 +44,50 @@ class Splitter:
                 if rel_path not in keys:
                     os.remove(os.path.join(root, f))
 
-    def write_model(self, name, img_dict, point_dict):
+    def write_model(self, name, img_dict, point_dict, num_test=0):
         m1_im = os.path.join(self.new_scene_path, name, 'sparse','0','images.txt')
+        m1_test = os.path.join(self.new_scene_path, name, 'sparse','0','test.txt')
         m1_pt = os.path.join(self.new_scene_path, name, 'sparse','0','points3D.txt')
 
-        with open(m1_im,'a') as f:
-            f.write(self.img_HEADER)
-            for ke,v in img_dict.items():
-                s = " ".join(str(x) for x in v[0])
-                f.write(s)
-                f.write('\n')
-                arr_data = v[1]
-                arr_data[:, 2] = arr_data[:, 2].astype(int)
-                for x, y, z in arr_data:
-                    f.write(f"{x:.6f} {y:.6f} {int(z)} ")
-                f.write('\n')
+        if num_test > 0:
+            keys = random.sample(list(img_dict.keys()),num_test)
+            with open(m1_test,'a') as f:
+                f.write(self.img_HEADER)
+                for ke,v in img_dict.items():
+                    if ke in keys:
+                        s = " ".join(str(x) for x in v[0])
+                        f.write(s)
+                        f.write('\n')
+                        arr_data = v[1]
+                        arr_data[:, 2] = arr_data[:, 2].astype(int)
+                        for x, y, z in arr_data:
+                            f.write(f"{x:.6f} {y:.6f} {int(z)} ")
+                        f.write('\n')
+
+            with open(m1_im,'a') as f:
+                f.write(self.img_HEADER)
+                for ke,v in img_dict.items():
+                    if ke not in keys:
+                        s = " ".join(str(x) for x in v[0])
+                        f.write(s)
+                        f.write('\n')
+                        arr_data = v[1]
+                        arr_data[:, 2] = arr_data[:, 2].astype(int)
+                        for x, y, z in arr_data:
+                            f.write(f"{x:.6f} {y:.6f} {int(z)} ")
+                        f.write('\n')
+        else:
+            with open(m1_im,'a') as f:
+                f.write(self.img_HEADER)
+                for ke,v in img_dict.items():
+                    s = " ".join(str(x) for x in v[0])
+                    f.write(s)
+                    f.write('\n')
+                    arr_data = v[1]
+                    arr_data[:, 2] = arr_data[:, 2].astype(int)
+                    for x, y, z in arr_data:
+                        f.write(f"{x:.6f} {y:.6f} {int(z)} ")
+                    f.write('\n')
 
         with open(m1_pt,'a') as f:
             f.write(self.points_HEADER)
@@ -147,8 +177,8 @@ class Splitter:
         except:
             pass
 
-        self.write_model(model1_name, m1_image_p2d, m1_p3d)
-        self.write_model(model2_name, m2_image_p2d, m2_p3d)
+        self.write_model(model1_name, m1_image_p2d, m1_p3d,5)
+        self.write_model(model2_name, m2_image_p2d, m2_p3d,5)
 
 
 
@@ -163,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument('-m1',type=str,default='model1')
     parser.add_argument('-m2',type=str,default='model2')
     parser.add_argument('-f',type=str,default=None)
+    parser.add_argument('--num_test',type=int,default=0)
     args = parser.parse_args()
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)

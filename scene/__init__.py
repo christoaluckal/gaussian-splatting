@@ -92,11 +92,7 @@ class Scene:
         self.new_test_cameras = {}
         if os.path.exists(os.path.join(self.source2_path, "sparse")):
             new_scene_info = sceneLoadTypeCallbacks["Colmap"](self.source2_path, "images", "", False, False)
-
-
-        # with open(new_scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-        #         dest_file.write(src_file.read())
-
+            
         camlist = []
         json_cams = []
         camlist.extend(new_scene_info.train_cameras)
