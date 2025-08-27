@@ -123,7 +123,7 @@ class Splitter:
 
         return idlist
 
-    def build_model(self, split_frac=[0.46,0.54], num_test=None):
+    def build_model(self, split_frac=[0.54,0.46], num_test=None):
         # if not split_frame:
         #     i = 0
         #     with open(self.images, 'r') as f:
@@ -149,9 +149,12 @@ class Splitter:
         with open(self.images, 'r') as f:
             image_data = f.readlines()[4:]
             image_count = len(image_data)//2
-            for i in range(len(split_frac)):
-                split_frac_idxs.append(i*int(image_count*split_frac[i]))
-            split_frac_idxs.append(image_count)
+            split_counts = [int(image_count * frac) for frac in split_frac]
+            split_counts[-1] = image_count - sum(split_counts[:-1])
+            split_frac_idxs = [0]
+            for count in split_counts:
+                split_frac_idxs.append(split_frac_idxs[-1] + count)
+
             print(split_frac_idxs)
             ans = input('Good?')
             if ans == 'n':
