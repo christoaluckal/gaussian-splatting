@@ -9,8 +9,10 @@ class Splitter:
     def __init__(self,
                  scene_path:str=None,
                  new_scene_path: str = None,
+                 is_default: bool = None
                  ):
         self.scene_base = scene_path
+        self.is_default = is_default
         # sparse_0 = os.path.join('sparse','0')
         sparse_0 = 'sparse_txt'
         self.cameras = os.path.join(self.scene_base, sparse_0, 'cameras.txt')
@@ -123,7 +125,7 @@ class Splitter:
 
         return idlist
 
-    def build_model(self, split_frac=[0.54,0.46], num_test=None):
+    def build_model(self, split_frac=[0.33,0.33,0.34], num_test=None):
         # if not split_frame:
         #     i = 0
         #     with open(self.images, 'r') as f:
@@ -135,6 +137,9 @@ class Splitter:
         #             i+=2
 
         #         split_frame = image_name
+
+        if self.is_default:
+            split_frac = [1.0]
 
 
         model_image_p2d = {}
@@ -234,11 +239,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s',type=str,required=True,help='source scene path')
     parser.add_argument('-m',type=str,required=True,help='destination scene path')
+    parser.add_argument('--default',action='store_true')
     parser.add_argument('--num_test',type=int,default=0,help='number of test images per model')
     args = parser.parse_args()
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)
     s = Splitter(scene_path=src_scene,
-                 new_scene_path=dst_scene
+                 new_scene_path=dst_scene,
+                 is_default=args.default
                  )
     s.build_model(num_test=args.num_test)

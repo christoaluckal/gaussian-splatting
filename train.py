@@ -25,6 +25,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import pickle
 import time
 import numpy as np
+import traceback
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -190,7 +191,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                         gaussians.reset_opacity()
 
-                if iteration == opt.add_new_model_itr and not def_flag:
+                if iteration % opt.add_new_model_itr == 0 and not def_flag:
                     print("Adding new gaussians")
                     scene.extend()
                     viewpoint_stack = scene.getTrainCameras().copy()
@@ -212,14 +213,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if (iteration in checkpoint_iterations):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
                     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-    except:
-        import matplotlib.pyplot as plt
-        fig, axs = plt.subplots(2,1)
-        axs[0].plot(losses, label='Loss')
-        axs[1].plot(num_gaussians, label='Num Gaussians')
-        axs[0].legend()
-        axs[1].legend()
-        plt.show()
+    except Exception as e:
+        # import matplotlib.pyplot as plt
+        # fig, axs = plt.subplots(2,1)
+        # axs[0].plot(losses, label='Loss')
+        # axs[1].plot(num_gaussians, label='Num Gaussians')
+        # axs[0].legend()
+        # axs[1].legend()
+        # plt.show()
+        print(traceback.format_exc())
 
     with open(pkl_name, 'wb') as f:
         data_dict = {
@@ -290,8 +292,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+            # tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
+            # tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+            pass
         torch.cuda.empty_cache()
 
         return l1_test, psnr_test
@@ -310,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     # parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 11_000, 30_000])
     parser.add_argument("--test_iterations", nargs="+", type=int, default=np.arange(1000,35000,5000,dtype=int))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[9_000, 11_000, 20_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=np.arange(1000,35000,5000,dtype=int).tolist())
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
