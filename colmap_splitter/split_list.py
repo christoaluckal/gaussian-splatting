@@ -9,10 +9,8 @@ class Splitter:
     def __init__(self,
                  scene_path:str=None,
                  new_scene_path: str = None,
-                 num_test: int = 0   
                  ):
         self.scene_base = scene_path
-        self.num_test = num_test
         # sparse_0 = os.path.join('sparse','0')
         sparse_0 = 'sparse_txt'
         self.cameras = os.path.join(self.scene_base, sparse_0, 'cameras.txt')
@@ -125,7 +123,7 @@ class Splitter:
 
         return idlist
 
-    def build_model(self, split_frac=[0.45,0.55], split_frame=None):
+    def build_model(self, split_frac=[0.46,0.54], num_test=None):
         # if not split_frame:
         #     i = 0
         #     with open(self.images, 'r') as f:
@@ -215,7 +213,7 @@ class Splitter:
         num_dirs = len(split_frac_idxs)-1
         for i in range(num_dirs):    
             os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
-            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],self.num_test)
+            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],num_test)
         # except Exception as e:
         #     print(e)
         #     pass
@@ -233,13 +231,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s',type=str,required=True,help='source scene path')
     parser.add_argument('-m',type=str,required=True,help='destination scene path')
-    parser.add_argument('-f',type=str,default=None,help='split frame name')
     parser.add_argument('--num_test',type=int,default=0,help='number of test images per model')
     args = parser.parse_args()
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)
     s = Splitter(scene_path=src_scene,
-                 new_scene_path=dst_scene,
-                 num_test = args.num_test
+                 new_scene_path=dst_scene
                  )
-    s.build_model(split_frame=args.f)
+    s.build_model(num_test=args.num_test)

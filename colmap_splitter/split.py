@@ -77,6 +77,7 @@ class Splitter:
                             f.write(f"{x:.6f} {y:.6f} {int(z)} ")
                         f.write('\n')
         else:
+            print("Skipping test")
             with open(m1_im,'a') as f:
                 f.write(self.img_HEADER)
                 for ke,v in img_dict.items():
@@ -109,7 +110,7 @@ class Splitter:
 
 
 
-    def build_model(self, model1_name=None, model2_name=None, split_frame=None):
+    def build_model(self, model1_name=None, model2_name=None, split_frame=None, num_test=0):
         if not split_frame:
             i = 0
             with open(self.images, 'r') as f:
@@ -177,8 +178,8 @@ class Splitter:
         except:
             pass
 
-        self.write_model(model1_name, m1_image_p2d, m1_p3d,5)
-        self.write_model(model2_name, m2_image_p2d, m2_p3d,5)
+        self.write_model(model1_name, m1_image_p2d, m1_p3d,num_test)
+        self.write_model(model2_name, m2_image_p2d, m2_p3d,num_test)
 
 
 
@@ -190,8 +191,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s',type=str,required=True)
     parser.add_argument('-m',type=str,required=True)
-    parser.add_argument('-m1',type=str,default='model1')
-    parser.add_argument('-m2',type=str,default='model2')
+    parser.add_argument('-m1',type=str,default='model0')
+    parser.add_argument('-m2',type=str,default='model1')
     parser.add_argument('-f',type=str,default=None)
     parser.add_argument('--num_test',type=int,default=0)
     args = parser.parse_args()
@@ -199,4 +200,4 @@ if __name__ == "__main__":
     dst_scene = os.path.abspath(args.m)
     s = Splitter(scene_path=src_scene,
                  new_scene_path=dst_scene)
-    s.build_model(model1_name=args.m1,model2_name=args.m2,split_frame=args.f)
+    s.build_model(model1_name=args.m1,model2_name=args.m2,split_frame=args.f,num_test=args.num_test)
