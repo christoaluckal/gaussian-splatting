@@ -222,6 +222,7 @@ class Splitter:
         for i in range(num_dirs):    
             os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
             self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],num_test)
+            
         # except Exception as e:
         #     print(e)
         #     pass
