@@ -11,3 +11,6 @@ trash
 jug
 *.ply
 *.json
+*.pkl
+*.jpg
+cfg_args

@@ -4,24 +4,22 @@ import pprint
 import shutil
 import argparse
 import random
+import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation as R
 
 class Splitter:
     def __init__(self,
                  scene_path:str=None,
-                 new_scene_path: str = None,
-                 is_default: bool = None
+                 new_scene_path: str = None
                  ):
         self.scene_base = scene_path
-        self.is_default = is_default
         # sparse_0 = os.path.join('sparse','0')
         sparse_0 = 'sparse_txt'
         self.cameras = os.path.join(self.scene_base, sparse_0, 'cameras.txt')
         self.images = os.path.join(self.scene_base, sparse_0, 'images.txt')
         self.points3D = os.path.join(self.scene_base, sparse_0, 'points3D.txt')
         self.new_scene_path = os.path.join(new_scene_path)
-
-        self.id_dict = {}
-        self.p3_dict = {}
+        self.image_3d_dict = {}
 
         self.img_HEADER = (
         "# Image list with two lines of data per image:\n"
@@ -53,8 +51,6 @@ class Splitter:
         m1_test = os.path.join(self.new_scene_path, name, 'sparse','0','test.txt')
         m1_pt = os.path.join(self.new_scene_path, name, 'sparse','0','points3D.txt')
 
-
-
         if num_test > 0:
             keys = random.sample(list(img_dict.keys()),num_test)
             with open(m1_test,'a') as f:
@@ -83,6 +79,7 @@ class Splitter:
                             f.write(f"{x:.6f} {y:.6f} {int(z)} ")
                         f.write('\n')
         else:
+            print("Skipping test")
             with open(m1_im,'a') as f:
                 f.write(self.img_HEADER)
                 for ke,v in img_dict.items():
@@ -113,125 +110,153 @@ class Splitter:
         self.copy_and_remove(valid_files,res4)
         self.copy_and_remove(valid_files,res8)
 
-    def build_composite_idlist(self,large_dict, skip_idx):
-        idlist = []
-        for i,kv in enumerate(large_dict.items()):
-            k = kv[0]
-            v = kv[1]
-            if i==skip_idx:
-                continue
+
+
+    def build_model(self, model1_name=None, model2_name=None, split_frame=None, num_test=0):
+        i = 0
+        xyz = []
+        image_names = []
+        xyz = []
+        with open(self.images, 'r') as f:
+            image_data = f.readlines()[4:]  # skip header
+            i = 0
+            while i < len(image_data):
+                iv_row_data = image_data[i].split()
+                qw, qx, qy, qz = map(float, iv_row_data[1:5])
+                image_names.append(iv_row_data[9])
+                tx, ty, tz = map(float, iv_row_data[5:8])
+                R_mat = R.from_quat([qx, qy, qz, qw]).as_matrix()
+                t_vec = np.array([tx, ty, tz])
+                C = -R_mat.T @ t_vec
+                xyz.append(C)
+                i += 2  
+
+        xyz = np.array(xyz)
+        mean = np.mean(xyz, axis=0)
+        xyz_centered = xyz - mean
+
+        # covariance + eigen decomposition
+        cov = np.cov(xyz_centered.T)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+
+        # sort eigenvectors by eigenvalue (largest first)
+        idx = np.argsort(eigvals)[::-1]
+        eigvecs = eigvecs[:, idx]
+
+        # make a right-handed coordinate system
+        if np.linalg.det(eigvecs) < 0:
+            eigvecs[:, -1] *= -1
+
+        R_align = eigvecs.T  # rotation matrix to align to XYZ
+
+        # -------------------------
+        # Step 2: Apply alignment
+        # -------------------------
+        xyz = (R_align @ xyz_centered.T).T
+
+        proj_xy = xyz[:, :2]  # project to XY plane
+
+        minx, miny = np.min(proj_xy, axis=0)
+        maxx, maxy = np.max(proj_xy, axis=0)
+
+        # --- choose one diagonal ---
+        # (1) bottom-left to top-right
+        x1, y1 = minx, miny
+        x2, y2 = maxx, maxy
+
+        # # (2) top-left to bottom-right (uncomment to use)
+        # x1, y1 = minx, maxy
+        # x2, y2 = maxx, miny
+
+        # line coefficients: ax + by + c = 0
+        a = y1 - y2
+        b = x2 - x1
+        c = x1*y2 - x2*y1
+
+        # signed distance
+        d = proj_xy @ np.array([a, b]) + c
+
+        group1 = proj_xy[d > 0]
+        group2 = proj_xy[d < 0]
+        on_line = proj_xy[np.isclose(d, 0)]
+
+        print("Group 1:", group1.shape[0], "points")
+        print("Group 2:", group2.shape[0], "points")
+        print("On line:", on_line.shape[0], "points")
+
+
+        # plot
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        plt.show()
+
+        image_groups = {}  # image_name -> 1 or 2
+
+        # after you compute proj_xy and d
+        for name, dist in zip(image_names, d):
+            if dist >= 0:
+                image_groups[name] = 1
             else:
-                idlist += list(v.keys())
-
-        return idlist
-
-    def build_model(self, split_count=3, num_test=None):
-        # if not split_frame:
-        #     i = 0
-        #     with open(self.images, 'r') as f:
-        #         image_data = f.readlines()[4:]
-        #         while i < len(image_data)//2:
-        #             iv_row = i
-        #             iv_row_data = image_data[iv_row].split()
-        #             image_name = iv_row_data[-1]
-        #             i+=2
-
-        #         split_frame = image_name
-
-        split_frac = np.ones(split_count)/split_count
-        split_frac = split_frac.tolist()
-
-        if self.is_default:
-            split_frac = [1.0]
+                image_groups[name] = 2
 
 
-        model_image_p2d = {}
-        for i in range(len(split_frac)):
-            model_image_p2d[f'm{i}_image_p2d'] = {}
-            self.id_dict[f'm{i}'] = {}
-            self.p3_dict[f'm{i}'] = {}
-
-        split_frac_idxs = []
-
+        m1_image_p2d = {}
+        m2_image_p2d = {}
+        self.id_dict = {}
 
         with open(self.images, 'r') as f:
             image_data = f.readlines()[4:]
-            image_count = len(image_data)//2
-            split_counts = [int(image_count * frac) for frac in split_frac]
-            split_counts[-1] = image_count - sum(split_counts[:-1])
-            split_frac_idxs = [0]
-            for count in split_counts:
-                split_frac_idxs.append(split_frac_idxs[-1] + count)
-
-            print(split_frac_idxs)
-            ans = input('Good?')
-            if ans == 'n':
-                exit(-1)
-
-            image_row = 0
-            curr_block = 0
-            icount = 0
-            while image_row < len(image_data):
-                iv_row = image_row
-                p2d_row = image_row+1
+            i = 0
+            while i < len(image_data):
+                iv_row = i
+                p2d_row = i+1
 
                 iv_row_data = image_data[iv_row].split()
                 image_name = iv_row_data[-1]
-
                 p2d_data = np.array(image_data[p2d_row].split(), dtype=float).reshape(-1, 3)
 
-                p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
-                self.id_dict[f'm{curr_block}'].update({str(id_): True for id_ in p2d_ids})
-        
-                filter_ids = self.build_composite_idlist(self.id_dict, curr_block)
-                curr_ids = p2d_data[:, 2].astype(int).astype(str)
-                mask = ~np.isin(curr_ids, filter_ids)
-                filtered_arr = p2d_data[mask]
-
-                model_image_p2d[f'm{curr_block}_image_p2d'][image_name] = [iv_row_data, filtered_arr]
-
-
-                if icount <= split_frac_idxs[curr_block+1]:
-                    icount +=1
+                if image_groups[image_name] == 1:
+                    # keep IDs so we can filter points3D later
+                    p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
+                    self.id_dict.update({str(id_): True for id_ in p2d_ids})
+                    m1_image_p2d[image_name] = [iv_row_data, p2d_data]
                 else:
-                    curr_block +=1
+                    curr_ids = p2d_data[:, 2].astype(int).astype(str)
+                    # remove IDs that were already assigned to group1
+                    mask = ~np.isin(curr_ids, list(self.id_dict.keys()))
+                    filtered_arr = p2d_data[mask]
+                    m2_image_p2d[image_name] = [iv_row_data, filtered_arr]
 
+                i += 2
 
-                image_row += 2
-
-
+        m1_p3d = {}
+        m2_p3d = {}
         with open(self.points3D, 'r') as f:
             points_data = f.readlines()[3:]
             i = 0
-            curr_block = 0
+
             while i < len(points_data):
                 point_row = points_data[i]
                 point_idx = point_row.split()[0]
-
-                for idx, kv in enumerate(self.id_dict.items()):
-                    k = kv[0]
-                    v = kv[1]
-                    if str(point_idx) in self.id_dict[k]:
-                        self.p3_dict[f'm{idx}'][point_idx] = point_row.split()[1:]
-                        break
-
+                if str(point_idx) in self.id_dict:
+                    m1_p3d[point_idx] = point_row.split()[1:]
+                else:
+                    m2_p3d[point_idx] = point_row.split()[1:]
                 i+=1
 
 
-        # try:
-            # os.makedirs(os.path.join(self.new_scene_path, model1_name, 'sparse','0'),exist_ok=True)
-            # os.makedirs(os.path.join(self.new_scene_path, model2_name, 'sparse','0'),exist_ok=True)
-        num_dirs = len(split_frac_idxs)-1
-        for i in range(num_dirs):    
-            os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
-            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],num_test)
-            
-        # except Exception as e:
-        #     print(e)
-        #     pass
+        try:
+            os.makedirs(os.path.join(self.new_scene_path, model1_name, 'sparse','0'),exist_ok=True)
+            os.makedirs(os.path.join(self.new_scene_path, model2_name, 'sparse','0'),exist_ok=True)
+        except:
+            pass
 
-        # self.write_model(model1_name, m1_image_p2d, m1_p3d,self.num_test)
-        # self.write_model(model2_name, m2_image_p2d, m2_p3d,self.num_test)
+        self.write_model(model1_name, m1_image_p2d, m1_p3d,num_test)
+        self.write_model(model2_name, m2_image_p2d, m2_p3d,num_test)
 
 
 
@@ -241,16 +266,15 @@ class Splitter:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s',type=str,required=True,help='source scene path')
-    parser.add_argument('-m',type=str,required=True,help='destination scene path')
-    parser.add_argument('--default',action='store_true')
-    parser.add_argument('--split_num',type=int,default=1)
-    parser.add_argument('--num_test',type=int,default=0,help='number of test images per model')
+    parser.add_argument('-s',type=str,required=True)
+    parser.add_argument('-m',type=str,required=True)
+    parser.add_argument('-m1',type=str,default='model0')
+    parser.add_argument('-m2',type=str,default='model1')
+    parser.add_argument('-f',type=str,default=None)
+    parser.add_argument('--num_test',type=int,default=0)
     args = parser.parse_args()
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)
     s = Splitter(scene_path=src_scene,
-                 new_scene_path=dst_scene,
-                 is_default=args.default
-                 )
-    s.build_model(split_count=args.split_num, num_test=args.num_test)
+                 new_scene_path=dst_scene)
+    s.build_model(model1_name=args.m1,model2_name=args.m2,split_frame=args.f,num_test=args.num_test)

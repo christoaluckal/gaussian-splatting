@@ -191,7 +191,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                         gaussians.reset_opacity()
 
-                if iteration % opt.add_new_model_itr == 0 and not def_flag:
+                if iteration % args.splitter_itr == 0 and not def_flag:
                     print("Adding new gaussians")
                     scene.extend()
                     viewpoint_stack = scene.getTrainCameras().copy()
@@ -314,6 +314,7 @@ if __name__ == "__main__":
     # parser.add_argument("--test_iterations", nargs="+", type=int, default=[500, 11_000, 30_000])
     parser.add_argument("--test_iterations", nargs="+", type=int, default=np.arange(1000,35000,5000,dtype=int))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=np.arange(1000,35000,5000,dtype=int).tolist())
+    parser.add_argument("--splitter_itr",type=int,default=10000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])

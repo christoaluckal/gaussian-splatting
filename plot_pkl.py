@@ -1,34 +1,33 @@
 import pickle
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
+
+res = sys.argv[1:][0]
 
 plt.rcParams['font.size'] = 18
 
-base_pkl = 'base_r8.pkl'
-new_pkl = 'split_r8.pkl'
+base_pkl = f'base_r{res}.pkl'
 
-base_data = None
-new_data = None
-
-def smooth(scalars, weight):  # Weight between 0 and 1
-    last = scalars[0]  # First value in the plot (first timestep)
-    smoothed = list()
-    for point in scalars:
-        smoothed_val = last * weight + (1 - weight) * point  # Calculate smoothed value
-        smoothed.append(smoothed_val)                        # Save it
-        last = smoothed_val                                  # Anchor the last smoothed value
-        
-    return smoothed
-
-
+# load base data
 with open(base_pkl,'rb') as f:
     base_data = pickle.load(f)
 
-with open(new_pkl,'rb') as f:
-    new_data = pickle.load(f)
+# Load split data up to 10
+split_data = {}
+for i in range(2, 11):
+    pkl_file = f'split{i}_r{res}.pkl'
+    with open(pkl_file, 'rb') as f:
+        split_data[i] = pickle.load(f)
 
-
-fig, axs = plt.subplots(2,2)
+def smooth(scalars, weight):  # Weight between 0 and 1
+    last = scalars[0]  # First value in the plot (first timestep)
+    smoothed = []
+    for point in scalars:
+        smoothed_val = last * weight + (1 - weight) * point
+        smoothed.append(smoothed_val)
+        last = smoothed_val
+    return smoothed
 
 def extract(data):
     base_time = np.array(data['times'])/1e9
@@ -38,57 +37,89 @@ def extract(data):
     base_l1 = data['l1s']
     base_l1p = []
     base_numg = data['num_gaussians']
-    for idx,l in enumerate(base_l1):
-        if type(l) != float:
+    for l in base_l1:
+        if not isinstance(l,float):
             base_l1p.append(l.item())
     base_psnr = data['psnrs']
     base_psnrp = []
-    for idx,l in enumerate(base_psnr):
-        if type(l) != float:
+    for l in base_psnr:
+        if not isinstance(l,float):
             base_psnrp.append(l.item())
     
     idxs = np.arange(1000,31000,5000).reshape(-1,1)
     base_l1p = np.array(base_l1p).reshape(-1,1)
-    base_l1p = np.concat((idxs,base_l1p),axis=1)
+    base_l1p = np.concatenate((idxs,base_l1p),axis=1)
 
     base_psnrp = np.array(base_psnrp).reshape(-1,1)
-    base_psnrp = np.concat((idxs,base_psnrp),axis=1)
+    base_psnrp = np.concatenate((idxs,base_psnrp),axis=1)
 
     return base_time, base_loss, base_loss_sm, base_l1p, base_psnrp, base_numg
 
-t1,loss1,loss1sm,l1loss1,psnr1,ng1 = extract(base_data)
-t2,loss2,loss2sm,l1loss2,psnr2,ng2 = extract(new_data)
+# Extract base
+t_base,loss_base,loss_base_sm,l1loss_base,psnr_base,ng_base = extract(base_data)
 
-base_t = t1[-1]
-aug_t = t2[-1]
-base_loss_sum = np.sum(loss1)
-aug_loss_sum = np.sum(loss2)
+# Extract splits
+split_results = {}
+for i, data in split_data.items():
+    split_results[i] = extract(data)
 
-fig.suptitle(f"Base Time: {base_t:0.2f} Base Loss Sum:{base_loss_sum:0.2f}\n Aug Time: {aug_t:0.2f} Aug Loss Sum:{aug_loss_sum:0.2f}")
+# Figure
+fig, axs = plt.subplots(2,2,figsize=(16,10))
 
+base_t = t_base[-1]
+base_loss_sum = np.sum(loss_base)
+
+# compute suptitle string
+summary_str = f"Base Time: {base_t:0.2f} Base Loss Sum:{base_loss_sum:0.2f}\n"
+for i,(t,loss,_,_,_,_) in split_results.items():
+    summary_str += f" Aug{i} Time: {t[-1]:0.2f} Aug{i} Loss Sum:{np.sum(loss):0.2f}\n"
+
+fig.suptitle(summary_str)
+
+# Loss per iteration
 axs[1,0].set_title('Loss per iteration')
-axs[1,0].plot(loss1,c='tab:red',alpha=0.5)
-axs[1,0].plot(loss2,c='tab:blue',alpha=0.5)
-axs[1,0].plot(loss1sm,label=f"Base",c='tab:red',alpha=1,linewidth=3)
-axs[1,0].plot(loss2sm,label=f"Augmented",c='tab:blue',alpha=1,linewidth=3)
+axs[1,0].plot(loss_base,c='tab:red',alpha=0.5)
+axs[1,0].plot(loss_base_sm,label="Base",c='tab:red',alpha=1,linewidth=3)
+
+colors = plt.cm.tab10.colors  # color palette
+for idx,(i,(t,loss,loss_sm,_,_,_)) in enumerate(split_results.items()):
+    color = colors[(i-2)%10]
+    axs[1,0].plot(loss,c=color,alpha=0.5)
+    axs[1,0].plot(loss_sm,label=f"Augmented {i}",c=color,alpha=1,linewidth=3)
+
 axs[1,0].legend()
 
+# Eval L1 Loss
 axs[0,0].set_title('Eval L1 Loss')
-axs[0,0].plot(l1loss1[:,0],l1loss1[:,1],label='Base',c='tab:red',linewidth=5)
-axs[0,0].plot(l1loss2[:,0],l1loss2[:,1],label='Augmented',c='tab:blue',linewidth=5)
-axs[0,0].scatter(l1loss1[:,0],l1loss1[:,1],c='tab:red',s=100)
-axs[0,0].scatter(l1loss2[:,0],l1loss2[:,1],c='tab:blue',s=100)
+axs[0,0].plot(l1loss_base[:,0],l1loss_base[:,1],label='Base',c='tab:red',linewidth=5)
+axs[0,0].scatter(l1loss_base[:,0],l1loss_base[:,1],c='tab:red',s=100)
+
+for idx,(i,(t,_,_,l1loss,_,_)) in enumerate(split_results.items()):
+    color = colors[(i-2)%10]
+    axs[0,0].plot(l1loss[:,0],l1loss[:,1],label=f'Augmented {i}',c=color,linewidth=5)
+    axs[0,0].scatter(l1loss[:,0],l1loss[:,1],c=color,s=100)
+
 axs[0,0].legend()
 
+# Eval PSNR
 axs[0,1].set_title('Eval PSNR')
-axs[0,1].plot(psnr1[:,0],psnr1[:,1],label='Base',c='tab:red',linewidth=5)
-axs[0,1].plot(psnr2[:,0],psnr2[:,1],label='Augmented',c='tab:blue',linewidth=5)
-axs[0,1].scatter(psnr1[:,0],psnr1[:,1],c='tab:red',s=100)
-axs[0,1].scatter(psnr2[:,0],psnr2[:,1],c='tab:blue',s=100)
+axs[0,1].plot(psnr_base[:,0],psnr_base[:,1],label='Base',c='tab:red',linewidth=5)
+axs[0,1].scatter(psnr_base[:,0],psnr_base[:,1],c='tab:red',s=100)
+
+for idx,(i,(t,_,_,_,psnr,_)) in enumerate(split_results.items()):
+    color = colors[(i-2)%10]
+    axs[0,1].plot(psnr[:,0],psnr[:,1],label=f'Augmented {i}',c=color,linewidth=5)
+    axs[0,1].scatter(psnr[:,0],psnr[:,1],c=color,s=100)
+
 axs[0,1].legend()
 
+# Number of Gaussians
 axs[1,1].set_title('Number of Gaussians')
-axs[1,1].plot(ng1,label='Base',c='tab:red',linewidth=5)
-axs[1,1].plot(ng2,label='Augmented',c='tab:blue',linewidth=5)
+axs[1,1].plot(ng_base,label='Base',c='tab:red',linewidth=5)
+for idx,(i,(t,_,_,_,_,ng)) in enumerate(split_results.items()):
+    color = colors[(i-2)%10]
+    axs[1,1].plot(ng,label=f'Augmented {i}',c=color,linewidth=5)
+
 axs[1,1].legend()
+
 plt.show()
