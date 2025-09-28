@@ -127,7 +127,7 @@ class Splitter:
 
         return idlist
 
-    def build_model(self,num_test=None):
+    def build_model(self,dist=0.5):
         i = 0
         xyz = []
         image_names = []
@@ -150,7 +150,7 @@ class Splitter:
         self.tree = cKDTree(xyz)
         self.qtree = cKDTree(xyz)
 
-        indexes = self.tree.query_ball_tree(self.qtree, r=1.1)
+        indexes = self.tree.query_ball_tree(self.qtree, r=dist)
         indexed = np.zeros((len(indexes)))
         base_ids = {}
         for i in range(len(indexes)):
@@ -168,9 +168,12 @@ class Splitter:
 
                 # input()
                 
-        
         pprint.pprint(base_ids)
-        print(len(base_ids))
+        print(len(base_ids.keys()))
+            
+        ans = input('Continue?')
+        if ans == 'n':
+            exit(1)
 
         model_image_p2d = {}
         i = 0
@@ -223,7 +226,7 @@ class Splitter:
                 i+=1
 
         os.makedirs(os.path.join(self.new_scene_path, f'model0', 'sparse','0'),exist_ok=True)
-        self.write_model(f'model0', model_image_p2d[f'm0_image_p2d'], self.p3_dict[f'm0'],num_test)
+        self.write_model(f'model0', model_image_p2d[f'm0_image_p2d'], self.p3_dict[f'm0'])
 
         del model_image_p2d
         del self.id_dict
@@ -241,6 +244,7 @@ class Splitter:
             model_start = 1
             key_list = base_ids.keys()
             for kidx, k in enumerate(key_list):
+                print(k)
                 kidx = kidx + model_start
                 new_rows = base_ids[k]
                 for r in new_rows:
@@ -279,9 +283,9 @@ class Splitter:
 
 
         num_dirs = len(model_image_p2d.keys())
-        for i in range(1, num_dirs):    
+        for i in range(1, num_dirs+1):    
             os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
-            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],num_test)
+            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],0)
             
 
 
@@ -290,8 +294,7 @@ if __name__ == "__main__":
     parser.add_argument('-s',type=str,required=True,help='source scene path')
     parser.add_argument('-m',type=str,required=True,help='destination scene path')
     parser.add_argument('--default',action='store_true')
-    parser.add_argument('--split_num',type=int,default=1)
-    parser.add_argument('--num_test',type=int,default=0,help='number of test images per model')
+    parser.add_argument('--dist',type=float,default=0.1)
     args = parser.parse_args()
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)
@@ -299,4 +302,4 @@ if __name__ == "__main__":
                  new_scene_path=dst_scene,
                  is_default=args.default
                  )
-    s.build_model(num_test=args.num_test)
+    s.build_model(dist=args.dist)

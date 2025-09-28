@@ -1,11 +1,11 @@
 import pickle
 import matplotlib.pyplot as plt
 import numpy as np
-
+import sys
 plt.rcParams['font.size'] = 18
-
-base_pkl = 'counter_base8.pkl'
-new_pkl = 'counter_split8.pkl'
+args = sys.argv[1:]
+base_pkl = args[0]
+new_pkl = args[1]
 
 base_data = None
 new_data = None
@@ -47,12 +47,18 @@ def extract(data):
         if type(l) != float:
             base_psnrp.append(l.item())
     
-    idxs = np.arange(1000,31000,5000).reshape(-1,1)
+    idxs = np.arange(200,35000,500).reshape(-1,1)
     base_l1p = np.array(base_l1p).reshape(-1,1)
-    base_l1p = np.concat((idxs,base_l1p),axis=1)
+    try:
+        base_l1p = np.concat((idxs,base_l1p),axis=1)
+    except:
+        base_l1p = np.concat((np.arange(len(base_l1p)).reshape(-1,1),base_l1p),axis=1)
 
     base_psnrp = np.array(base_psnrp).reshape(-1,1)
-    base_psnrp = np.concat((idxs,base_psnrp),axis=1)
+    try:
+        base_psnrp = np.concat((idxs,base_psnrp),axis=1)
+    except:
+        base_psnrp = np.concat((np.arange(len(base_psnrp)).reshape(-1,1),base_psnrp),axis=1)
 
     return base_time, base_loss, base_loss_sm, base_l1p, base_psnrp, base_numg
 

@@ -13,4 +13,5 @@ jug
 *.json
 *.pkl
 *.jpg
+*.JPG
 cfg_args
