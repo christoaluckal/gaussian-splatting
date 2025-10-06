@@ -37,8 +37,16 @@ class FusedSSIMMap(torch.autograd.Function):
         grad = fusedssim_backward(C1, C2, img1, img2, opt_grad)
         return None, None, grad, None
 
-def l1_loss(network_output, gt):
-    return torch.abs((network_output - gt)).mean()
+def l1_loss(network_output, gt, mask=None):
+    diff = torch.abs(network_output - gt)
+    if mask is not None:
+        if mask.shape != diff.shape:
+            mask = mask.expand_as(diff)
+        diff = diff * mask
+        return diff.sum() / (mask.sum() + 1e-8) 
+    else:
+        return diff.mean()
+
 
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()

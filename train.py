@@ -26,6 +26,8 @@ import pickle
 import time
 import numpy as np
 import traceback
+import matplotlib.pyplot as plt
+import random
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -131,14 +133,103 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
-            Ll1 = l1_loss(image, gt_image)
-            if FUSED_SSIM_AVAILABLE:
-                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-            else:
-                ssim_value = ssim(image, gt_image)
+            keep_prob = 0.3
 
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
-            losses.append(loss.item())
+            # mask = (torch.rand_like(image[..., 0]) < keep_prob).float()
+            # mask = mask.unsqueeze(-1).expand_as(image)
+            H, W = image.shape[1:3]
+
+            if keep_prob > 0.9999:
+                mask = torch.ones_like(image[...,0])
+                mask = mask.unsqueeze(-1).expand_as(image)
+            else:
+                mask = torch.zeros_like(image[...,0])
+                patch_area = H * W * keep_prob
+                side = int((patch_area) ** 0.5)
+                print(side,H,W)
+                mask[:side, :side] = 1.0
+                mask = mask.unsqueeze(-1).expand_as(image)
+
+
+            Ll1_nomask = l1_loss(image, gt_image,None)
+            Ll1_mask = l1_loss(image, gt_image,mask)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value_nomask = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+                ssim_value_mask = fused_ssim((image*mask).unsqueeze(0), (gt_image*mask).unsqueeze(0))
+            else:
+                ssim_nomask = fused_ssim(image, gt_image)
+                ssim_mask = ssim(image * mask, gt_image * mask)
+
+            gaussians.optimizer.zero_grad(set_to_none=True)
+            loss = (1.0 - opt.lambda_dssim) * Ll1_nomask + opt.lambda_dssim * (1.0 - ssim_value_nomask)
+            loss.backward(retain_graph=True)
+            grad_mag_nomask = gaussians._xyz.grad.norm(dim=1).detach().cpu()
+
+
+            grads_nomask = {
+                'xyz': gaussians._xyz.grad.clone() if gaussians._xyz.grad is not None else None,
+                'scaling': gaussians._scaling.grad.clone() if gaussians._scaling.grad is not None else None,
+                'rotation': gaussians._rotation.grad.clone() if gaussians._rotation.grad is not None else None,
+                'opacity': gaussians._opacity.grad.clone() if gaussians._opacity.grad is not None else None,
+                'features_dc': gaussians._features_dc.grad.clone() if gaussians._features_dc.grad is not None else None,
+            }
+
+            gaussians.optimizer.zero_grad(set_to_none=True)
+            loss = (1.0 - opt.lambda_dssim) * Ll1_mask + opt.lambda_dssim * (1.0 - ssim_value_mask)
+            loss.backward()
+
+            grad_mag_mask = gaussians._xyz.grad.norm(dim=1).detach().cpu()
+
+            grads_mask = {
+                'xyz': gaussians._xyz.grad.clone() if gaussians._xyz.grad is not None else None,
+                'scaling': gaussians._scaling.grad.clone() if gaussians._scaling.grad is not None else None,
+                'rotation': gaussians._rotation.grad.clone() if gaussians._rotation.grad is not None else None,
+                'opacity': gaussians._opacity.grad.clone() if gaussians._opacity.grad is not None else None,
+                'features_dc': gaussians._features_dc.grad.clone() if gaussians._features_dc.grad is not None else None,
+            }
+
+            for name in grads_nomask.keys():
+                if grads_nomask[name] is not None and grads_mask[name] is not None:
+                    norm_nomask = grads_nomask[name].norm().item()
+                    norm_mask = grads_mask[name].norm().item()
+                    ratio = norm_mask / (norm_nomask + 1e-8)
+                    print(f"{name:12s} | nomask: {norm_nomask:.6f} | mask: {norm_mask:.6f} | ratio: {ratio:.3f}")
+                    # print(f"{name:12s} | nomask: {norm_nomask:.6f} | mask: {norm_mask:.6f}")
+
+
+            # gaussians.optimizer.step()
+            # gaussians.optimizer.zero_grad(set_to_none=True)
+
+            plt.figure(figsize=(10,4))
+            plt.hist(grads_nomask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='no mask')
+            plt.hist(grads_mask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='mask')
+            plt.legend()
+            plt.show()
+
+            # plt.subplot(1,2,1)
+            # plt.title("Unmasked grads")
+            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
+            # gaussians._xyz[:,1].detach().cpu().numpy(),
+            # c=grad_mag_nomask.detach().cpu().numpy(),
+            # cmap='inferno', s=2)
+
+            # plt.subplot(1,2,2)
+            # plt.title("Masked grads")
+            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
+            # gaussians._xyz[:,1].detach().cpu().numpy(),
+            # c=grad_mag_mask.detach().cpu().numpy(),
+            # cmap='inferno', s=2)
+            # plt.tight_layout()
+            # plt.show()
+
+            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
+            # gaussians._xyz[:,1].detach().cpu().numpy(),
+            # c=(grad_mag_mask - grad_mag_nomask).detach().cpu().numpy(),
+            # cmap='bwr', s=2)
+            # plt.show()
+
+
+            # losses.append(loss.item())
 
             # Depth regularization
             Ll1depth_pure = 0.0
@@ -154,7 +245,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 Ll1depth = 0
 
-            loss.backward()
+            
 
             iter_end.record()
 
@@ -170,7 +261,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     progress_bar.close()
 
                 # Log and save
-                l1,psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+                l1,psnr = training_report(tb_writer, iteration, 0, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
                 if l1 is not None:
                     l1s.append(l1)
                     psnrs.append(psnr)
@@ -199,16 +290,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     print('New Viewpoint Indexes:',len(viewpoint_stack))
 
                 # Optimizer step
-                if iteration < opt.iterations:
-                    gaussians.exposure_optimizer.step()
-                    gaussians.exposure_optimizer.zero_grad(set_to_none = True)
-                    if use_sparse_adam:
-                        visible = radii > 0
-                        gaussians.optimizer.step(visible, radii.shape[0])
-                        gaussians.optimizer.zero_grad(set_to_none = True)
-                    else:
-                        gaussians.optimizer.step()
-                        gaussians.optimizer.zero_grad(set_to_none = True)
+                # if iteration < opt.iterations:
+                #     gaussians.exposure_optimizer.step()
+                #     gaussians.exposure_optimizer.zero_grad(set_to_none = True)
+                #     if use_sparse_adam:
+                #         visible = radii > 0
+                #         gaussians.optimizer.step(visible, radii.shape[0])
+                #         gaussians.optimizer.zero_grad(set_to_none = True)
+                #     else:
+                #         gaussians.optimizer.step()
+                #         gaussians.optimizer.zero_grad(set_to_none = True)
 
                 if (iteration in checkpoint_iterations):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
