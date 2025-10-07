@@ -5,7 +5,9 @@ import sys
 plt.rcParams['font.size'] = 18
 args = sys.argv[1:]
 base_pkl = args[0]
-new_pkl = args[1]
+base_name = args[1]
+new_pkl = args[2]
+new_name = args[3]
 
 base_data = None
 new_data = None
@@ -32,6 +34,7 @@ fig, axs = plt.subplots(2,2)
 
 def extract(data):
     base_time = np.array(data['times'])/1e9
+    
     base_time[:] = base_time[:] - base_time[0]
     base_loss = data['losses']
     base_loss_sm = smooth(data['losses'],0.9)
@@ -50,15 +53,15 @@ def extract(data):
     idxs = np.arange(200,35000,500).reshape(-1,1)
     base_l1p = np.array(base_l1p).reshape(-1,1)
     try:
-        base_l1p = np.concat((idxs,base_l1p),axis=1)
+        base_l1p = np.concatenate((idxs,base_l1p),axis=1)
     except:
-        base_l1p = np.concat((np.arange(len(base_l1p)).reshape(-1,1),base_l1p),axis=1)
+        base_l1p = np.concatenate((np.arange(len(base_l1p)).reshape(-1,1),base_l1p),axis=1)
 
     base_psnrp = np.array(base_psnrp).reshape(-1,1)
     try:
-        base_psnrp = np.concat((idxs,base_psnrp),axis=1)
+        base_psnrp = np.concatenate((idxs,base_psnrp),axis=1)
     except:
-        base_psnrp = np.concat((np.arange(len(base_psnrp)).reshape(-1,1),base_psnrp),axis=1)
+        base_psnrp = np.concatenate((np.arange(len(base_psnrp)).reshape(-1,1),base_psnrp),axis=1)
 
     return base_time, base_loss, base_loss_sm, base_l1p, base_psnrp, base_numg
 
@@ -70,31 +73,31 @@ aug_t = t2[-1]
 base_loss_sum = np.sum(loss1)
 aug_loss_sum = np.sum(loss2)
 
-fig.suptitle(f"Base Time: {base_t:0.2f} Base Loss Sum:{base_loss_sum:0.2f}\n Aug Time: {aug_t:0.2f} Aug Loss Sum:{aug_loss_sum:0.2f}")
+fig.suptitle(f"{base_name} Time: {base_t:0.2f} {base_name} Loss Sum:{base_loss_sum:0.2f}\n {new_name} Time: {aug_t:0.2f} {new_name} Loss Sum:{aug_loss_sum:0.2f}")
 
 axs[1,0].set_title('Loss per iteration')
 axs[1,0].plot(loss1,c='tab:red',alpha=0.5)
 axs[1,0].plot(loss2,c='tab:blue',alpha=0.5)
-axs[1,0].plot(loss1sm,label=f"Base",c='tab:red',alpha=1,linewidth=3)
-axs[1,0].plot(loss2sm,label=f"Augmented",c='tab:blue',alpha=1,linewidth=3)
+axs[1,0].plot(loss1sm,label=f"{base_name}",c='tab:red',alpha=1,linewidth=3)
+axs[1,0].plot(loss2sm,label=f"{new_name}",c='tab:blue',alpha=1,linewidth=3)
 axs[1,0].legend()
 
 axs[0,0].set_title('Eval L1 Loss')
-axs[0,0].plot(l1loss1[:,0],l1loss1[:,1],label='Base',c='tab:red',linewidth=5)
-axs[0,0].plot(l1loss2[:,0],l1loss2[:,1],label='Augmented',c='tab:blue',linewidth=5)
+axs[0,0].plot(l1loss1[:,0],l1loss1[:,1],label=f'{base_name}',c='tab:red',linewidth=5)
+axs[0,0].plot(l1loss2[:,0],l1loss2[:,1],label=f'{new_name}',c='tab:blue',linewidth=5)
 axs[0,0].scatter(l1loss1[:,0],l1loss1[:,1],c='tab:red',s=100)
 axs[0,0].scatter(l1loss2[:,0],l1loss2[:,1],c='tab:blue',s=100)
 axs[0,0].legend()
 
 axs[0,1].set_title('Eval PSNR')
-axs[0,1].plot(psnr1[:,0],psnr1[:,1],label='Base',c='tab:red',linewidth=5)
-axs[0,1].plot(psnr2[:,0],psnr2[:,1],label='Augmented',c='tab:blue',linewidth=5)
+axs[0,1].plot(psnr1[:,0],psnr1[:,1],label=f'{base_name}',c='tab:red',linewidth=5)
+axs[0,1].plot(psnr2[:,0],psnr2[:,1],label=f'{new_name}',c='tab:blue',linewidth=5)
 axs[0,1].scatter(psnr1[:,0],psnr1[:,1],c='tab:red',s=100)
 axs[0,1].scatter(psnr2[:,0],psnr2[:,1],c='tab:blue',s=100)
 axs[0,1].legend()
 
 axs[1,1].set_title('Number of Gaussians')
-axs[1,1].plot(ng1,label='Base',c='tab:red',linewidth=5)
-axs[1,1].plot(ng2,label='Augmented',c='tab:blue',linewidth=5)
+axs[1,1].plot(ng1,label=f'{base_name}',c='tab:red',linewidth=5)
+axs[1,1].plot(ng2,label=f'{new_name}',c='tab:blue',linewidth=5)
 axs[1,1].legend()
 plt.show()
