@@ -28,6 +28,8 @@ import numpy as np
 import traceback
 import matplotlib.pyplot as plt
 import random
+import copy
+np.set_printoptions(suppress=True,precision=3)
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -46,7 +48,7 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, pkl_name, def_flag):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, pkl_name, def_flag, keep_prob):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -114,7 +116,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_indices = list(range(len(viewpoint_stack)))
                 
 
-            rand_idx = randint(0, len(viewpoint_indices) - 1)
+            # rand_idx = randint(0, len(viewpoint_indices) - 1)
+            rand_idx = 5
             viewpoint_cam = viewpoint_stack.pop(rand_idx)
             vind = viewpoint_indices.pop(rand_idx)
 
@@ -133,7 +136,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
-            keep_prob = 0.3
+            # keep_prob = args.keep_prob
 
             # mask = (torch.rand_like(image[..., 0]) < keep_prob).float()
             # mask = mask.unsqueeze(-1).expand_as(image)
@@ -142,11 +145,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if keep_prob > 0.9999:
                 mask = torch.ones_like(image[...,0])
                 mask = mask.unsqueeze(-1).expand_as(image)
+            elif keep_prob < 1e-3:
+                mask = torch.zeros_like(image[...,0])
+                mask = mask.unsqueeze(-1).expand_as(image)
             else:
                 mask = torch.zeros_like(image[...,0])
                 patch_area = H * W * keep_prob
                 side = int((patch_area) ** 0.5)
-                print(side,H,W)
+                # print(side,H,W)
                 mask[:side, :side] = 1.0
                 mask = mask.unsqueeze(-1).expand_as(image)
 
@@ -157,54 +163,69 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 ssim_value_nomask = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
                 ssim_value_mask = fused_ssim((image*mask).unsqueeze(0), (gt_image*mask).unsqueeze(0))
             else:
-                ssim_nomask = fused_ssim(image, gt_image)
-                ssim_mask = ssim(image * mask, gt_image * mask)
+                pass
+                # ssim_nomask = fused_ssim(image, gt_image)
+                # ssim_mask = ssim(image * mask, gt_image * mask)
 
+            # --- Unmasked pass ---
             gaussians.optimizer.zero_grad(set_to_none=True)
-            loss = (1.0 - opt.lambda_dssim) * Ll1_nomask + opt.lambda_dssim * (1.0 - ssim_value_nomask)
-            loss.backward(retain_graph=True)
-            grad_mag_nomask = gaussians._xyz.grad.norm(dim=1).detach().cpu()
+            loss_nomask = (1 - opt.lambda_dssim) * Ll1_nomask + opt.lambda_dssim * (1.0 - ssim_value_nomask)
+            old_params_nomask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
+            loss_nomask.backward(retain_graph=True)
 
+            print("=== Unmasked grads ===")
+            for g in gaussians.optimizer.param_groups:
+                p = g['params'][0]
+                gradnorm = p.grad.norm().item() if p.grad is not None else 0
+                print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
 
-            grads_nomask = {
-                'xyz': gaussians._xyz.grad.clone() if gaussians._xyz.grad is not None else None,
-                'scaling': gaussians._scaling.grad.clone() if gaussians._scaling.grad is not None else None,
-                'rotation': gaussians._rotation.grad.clone() if gaussians._rotation.grad is not None else None,
-                'opacity': gaussians._opacity.grad.clone() if gaussians._opacity.grad is not None else None,
-                'features_dc': gaussians._features_dc.grad.clone() if gaussians._features_dc.grad is not None else None,
-            }
+        
 
+            # with torch.no_grad():
+            #     gaussians.optimizer.step()
+
+            # print("=== Unmasked param deltas ===")
+            # for g in gaussians.optimizer.param_groups:
+            #     name = g['name']
+            #     new = g['params'][0]
+            #     delta = (new - old_params_nomask[name]).norm().item()
+            #     print(f"{name:10s} | Δparam: {delta:.6e}")
+
+            # # --- Masked pass ---
             gaussians.optimizer.zero_grad(set_to_none=True)
-            loss = (1.0 - opt.lambda_dssim) * Ll1_mask + opt.lambda_dssim * (1.0 - ssim_value_mask)
-            loss.backward()
+            loss_mask = (1 - opt.lambda_dssim) * Ll1_mask + opt.lambda_dssim * (1.0 - ssim_value_mask)
+            old_params_mask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
+            loss_mask.backward()
 
-            grad_mag_mask = gaussians._xyz.grad.norm(dim=1).detach().cpu()
+            print("=== Masked grads ===")
+            for g in gaussians.optimizer.param_groups:
+                p = g['params'][0]
+                gradnorm = p.grad.norm().item() if p.grad is not None else 0
+                print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
 
-            grads_mask = {
-                'xyz': gaussians._xyz.grad.clone() if gaussians._xyz.grad is not None else None,
-                'scaling': gaussians._scaling.grad.clone() if gaussians._scaling.grad is not None else None,
-                'rotation': gaussians._rotation.grad.clone() if gaussians._rotation.grad is not None else None,
-                'opacity': gaussians._opacity.grad.clone() if gaussians._opacity.grad is not None else None,
-                'features_dc': gaussians._features_dc.grad.clone() if gaussians._features_dc.grad is not None else None,
-            }
+            gaussians.optimizer.step()
 
-            for name in grads_nomask.keys():
-                if grads_nomask[name] is not None and grads_mask[name] is not None:
-                    norm_nomask = grads_nomask[name].norm().item()
-                    norm_mask = grads_mask[name].norm().item()
-                    ratio = norm_mask / (norm_nomask + 1e-8)
-                    print(f"{name:12s} | nomask: {norm_nomask:.6f} | mask: {norm_mask:.6f} | ratio: {ratio:.3f}")
-                    # print(f"{name:12s} | nomask: {norm_nomask:.6f} | mask: {norm_mask:.6f}")
+            print("=== Masked param deltas ===")
+            for g in gaussians.optimizer.param_groups:
+                name = g['name']
+                new = g['params'][0]
+                delta = (new - old_params_mask[name]).norm().item()
+                denom = old_params_mask[name].norm().item() + 1e-8
+                delta_pct = 100 * delta / denom
+                print(f"{name:10s} | Δparam: {delta_pct:8.4f}%")
+                
 
+            print("*"*20)
 
-            # gaussians.optimizer.step()
+            exit(-1)
+
             # gaussians.optimizer.zero_grad(set_to_none=True)
 
-            plt.figure(figsize=(10,4))
-            plt.hist(grads_nomask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='no mask')
-            plt.hist(grads_mask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='mask')
-            plt.legend()
-            plt.show()
+            # plt.figure(figsize=(10,4))
+            # plt.hist(grads_nomask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='no mask')
+            # plt.hist(grads_mask['xyz'].detach().cpu().numpy().flatten(), bins=10, alpha=0.5, label='mask')
+            # plt.legend()
+            # plt.show()
 
             # plt.subplot(1,2,1)
             # plt.title("Unmasked grads")
@@ -245,7 +266,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 Ll1depth = 0
 
-            
+            loss = loss_nomask
 
             iter_end.record()
 
@@ -261,13 +282,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     progress_bar.close()
 
                 # Log and save
-                l1,psnr = training_report(tb_writer, iteration, 0, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
-                if l1 is not None:
-                    l1s.append(l1)
-                    psnrs.append(psnr)
-                if (iteration in saving_iterations):
-                    print("\n[ITER {}] Saving Gaussians".format(iteration))
-                    scene.save(iteration)
+                # l1,psnr = training_report(tb_writer, iteration, 0, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+                # if l1 is not None:
+                #     l1s.append(l1)
+                #     psnrs.append(psnr)
+                # if (iteration in saving_iterations):
+                #     print("\n[ITER {}] Saving Gaussians".format(iteration))
+                #     scene.save(iteration)
 
                 # Densification
                 if iteration < opt.densify_until_iter:
@@ -290,16 +311,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     print('New Viewpoint Indexes:',len(viewpoint_stack))
 
                 # Optimizer step
-                # if iteration < opt.iterations:
-                #     gaussians.exposure_optimizer.step()
-                #     gaussians.exposure_optimizer.zero_grad(set_to_none = True)
-                #     if use_sparse_adam:
-                #         visible = radii > 0
-                #         gaussians.optimizer.step(visible, radii.shape[0])
-                #         gaussians.optimizer.zero_grad(set_to_none = True)
-                #     else:
-                #         gaussians.optimizer.step()
-                #         gaussians.optimizer.zero_grad(set_to_none = True)
+                if iteration < opt.iterations:
+                    gaussians.exposure_optimizer.step()
+                    gaussians.exposure_optimizer.zero_grad(set_to_none = True)
+                    if use_sparse_adam:
+                        visible = radii > 0
+                        gaussians.optimizer.step(visible, radii.shape[0])
+                        gaussians.optimizer.zero_grad(set_to_none = True)
+                    else:
+                        gaussians.optimizer.step()
+                        gaussians.optimizer.zero_grad(set_to_none = True)
 
                 if (iteration in checkpoint_iterations):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -412,6 +433,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--pkl_name", type=str, default="")
     parser.add_argument("--default", action="store_true")
+    parser.add_argument("--keep_prob",type=float,default=1.0)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -424,7 +446,7 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.pkl_name, args.default)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.pkl_name, args.default, args.keep_prob)
 
     # All done
     print("\nTraining complete.")

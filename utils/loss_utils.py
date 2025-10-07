@@ -42,8 +42,9 @@ def l1_loss(network_output, gt, mask=None):
     if mask is not None:
         if mask.shape != diff.shape:
             mask = mask.expand_as(diff)
-        diff = diff * mask
-        return diff.sum() / (mask.sum() + 1e-8) 
+        # diff = diff * mask
+        # return diff.sum() / (mask.sum() + 1e-8) 
+        return (diff * mask).mean()
     else:
         return diff.mean()
 
