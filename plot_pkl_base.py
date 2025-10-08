@@ -2,7 +2,7 @@ import pickle
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
-plt.rcParams['font.size'] = 18
+plt.rcParams['font.size'] = 32
 args = sys.argv[1:]
 base_pkl = args[0]
 base_name = args[1]
@@ -73,7 +73,7 @@ aug_t = t2[-1]
 base_loss_sum = np.sum(loss1)
 aug_loss_sum = np.sum(loss2)
 
-fig.suptitle(f"{base_name} Time: {base_t:0.2f} {base_name} Loss Sum:{base_loss_sum:0.2f}\n {new_name} Time: {aug_t:0.2f} {new_name} Loss Sum:{aug_loss_sum:0.2f}")
+fig.suptitle(f"|{base_name}| Time: {base_t:0.2f} {base_name} Loss Sum:{base_loss_sum:0.2f}\n|{new_name}| Time: {aug_t:0.2f} {new_name} Loss Sum:{aug_loss_sum:0.2f}")
 
 axs[1,0].set_title('Loss per iteration')
 axs[1,0].plot(loss1,c='tab:red',alpha=0.5)

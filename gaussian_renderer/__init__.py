@@ -17,7 +17,7 @@ from utils.sh_utils import eval_sh
 import numpy as np
 
 def create_random_mask(width,height,fraction=0.3):
-    mask = (np.random.rand(height, width) < fraction).astype(float).flatten()
+    mask = (np.random.rand(height, width) > fraction).astype(float).flatten()
     return mask
 
 

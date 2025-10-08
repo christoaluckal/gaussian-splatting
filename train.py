@@ -119,8 +119,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_indices = list(range(len(viewpoint_stack)))
                 
 
-            rand_idx = randint(0, len(viewpoint_indices) - 1)
-            # rand_idx = 5
+            # rand_idx = randint(0, len(viewpoint_indices) - 1)
+            rand_idx = 5
             viewpoint_cam = viewpoint_stack.pop(rand_idx)
             vind = viewpoint_indices.pop(rand_idx)
 
@@ -130,28 +130,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-            # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
-            # image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
             render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
-            image_masked, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+            
 
             if viewpoint_cam.alpha_mask is not None:
                 alpha_mask = viewpoint_cam.alpha_mask.cuda()
-                image = image_masked
+                # image = image_masked
                 image *= alpha_mask
+                
 
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
-            # keep_prob = args.keep_prob
 
-            # mask = (torch.rand_like(image[..., 0]) < keep_prob).float()
-            # mask = mask.unsqueeze(-1).expand_as(image)
             assert image.ndim == 3, f"expected CHW, got {image.shape}"
             C, H, W = image.shape
             device = image.device
             dtype = image.dtype
+
+            scale = keep_prob ** 0.5
 
             if keep_prob > 0.9999:
                 mask2d = torch.ones(H, W, device=device, dtype=dtype)
@@ -159,105 +158,96 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 mask2d = torch.zeros(H, W, device=device, dtype=dtype)
             else:
                 mask2d = torch.zeros(H, W, device=device, dtype=dtype)
-                patch_area = int(H * W * keep_prob)
-                side = max(1, int(patch_area ** 0.5))
-                mask2d[:side, :side] = 1.0
+                # patch_area = int(H * W * keep_prob)
+                # side = max(1, int(patch_area ** 0.5))
+                row_mask = int(scale * H)
+                col_mask = int(scale * W)
+                mask2d[:row_mask, :col_mask] = 1.0
 
             mask = mask2d.unsqueeze(0).expand(C, H, W) 
 
+            base_params = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
 
-            # Ll1_nomask = l1_loss(image, gt_image,None)
-            Ll1_mask = l1_loss(image_masked, gt_image,mask)
-            if FUSED_SSIM_AVAILABLE:
-                # ssim_value_nomask = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-                ssim_value_mask   = fused_ssim((image_masked * mask).unsqueeze(0), (gt_image * mask).unsqueeze(0))
-            else:
-                pass
-                # ssim_nomask = fused_ssim(image, gt_image)
-                # ssim_mask = ssim(image * mask, gt_image * mask)
+
+            Ll1_nomask = l1_loss(image, gt_image,None)
+            ssim_value_nomask = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
 
             # --- Unmasked pass ---
-            # gaussians.optimizer.zero_grad(set_to_none=True)
-            # loss_nomask = (1 - opt.lambda_dssim) * Ll1_nomask + opt.lambda_dssim * (1.0 - ssim_value_nomask)
-            # old_params_nomask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
-            # loss_nomask.backward()
-            # gaussians.optimizer.step()
+            gaussians.optimizer.zero_grad(set_to_none=True)
+            loss_nomask = (1 - opt.lambda_dssim) * Ll1_nomask + opt.lambda_dssim * (1.0 - ssim_value_nomask)
+            old_params_nomask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
+            loss_nomask.backward()
+            gaussians.optimizer.step()
 
-            # grads_nomask = {
-            #     'xyz': gaussians._xyz.grad.detach().clone() if gaussians._xyz.grad is not None else None,
-            #     'scaling': gaussians._scaling.grad.detach().clone() if gaussians._scaling.grad is not None else None,
-            #     'rotation': gaussians._rotation.grad.detach().clone() if gaussians._rotation.grad is not None else None,
-            #     'opacity': gaussians._opacity.grad.detach().clone() if gaussians._opacity.grad is not None else None,
-            #     'features_dc': gaussians._features_dc.grad.detach().clone() if gaussians._features_dc.grad is not None else None,
-            #     'features_rest': gaussians._features_rest.grad.detach().clone() if gaussians._features_rest.grad is not None else None,
-            # }
+            after_nomask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
 
-            # print("=== Unmasked grads ===")
-            # for g in gaussians.optimizer.param_groups:
-            #     p = g['params'][0]
-            #     gradnorm = p.grad.norm().item() if p.grad is not None else 0
-            #     print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
+            with torch.no_grad():
+                for g in gaussians.optimizer.param_groups:
+                    g['params'][0].copy_(base_params[g['name']])
 
+            
+            grads_nomask = {
+                'xyz': gaussians._xyz.grad.detach().clone() if gaussians._xyz.grad is not None else None,
+                'scaling': gaussians._scaling.grad.detach().clone() if gaussians._scaling.grad is not None else None,
+                'rotation': gaussians._rotation.grad.detach().clone() if gaussians._rotation.grad is not None else None,
+                'opacity': gaussians._opacity.grad.detach().clone() if gaussians._opacity.grad is not None else None,
+                'features_dc': gaussians._features_dc.grad.detach().clone() if gaussians._features_dc.grad is not None else None,
+                'features_rest': gaussians._features_rest.grad.detach().clone() if gaussians._features_rest.grad is not None else None,
+            }
 
+            print("=== Unmasked grads ===")
+            for g in gaussians.optimizer.param_groups:
+                p = g['params'][0]
+                gradnorm = p.grad.norm().item() if p.grad is not None else 0
+                print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
+
+            render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
+            image_masked, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            image_masked *= alpha_mask
+
+            Ll1_mask = l1_loss(image_masked, gt_image,mask)
+            ssim_value_mask = fused_ssim((image_masked * mask).unsqueeze(0),(gt_image * mask).unsqueeze(0))
             gaussians.optimizer.zero_grad(set_to_none=True)
             loss_mask = (1 - opt.lambda_dssim) * Ll1_mask + opt.lambda_dssim * (1.0 - ssim_value_mask)
             old_params_mask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
             loss_mask.backward()
             gaussians.optimizer.step()
 
-            # grads_mask = {
-            #     'xyz': gaussians._xyz.grad.detach().clone() if gaussians._xyz.grad is not None else None,
-            #     'scaling': gaussians._scaling.grad.detach().clone() if gaussians._scaling.grad is not None else None,
-            #     'rotation': gaussians._rotation.grad.detach().clone() if gaussians._rotation.grad is not None else None,
-            #     'opacity': gaussians._opacity.grad.detach().clone() if gaussians._opacity.grad is not None else None,
-            #     'features_dc': gaussians._features_dc.grad.detach().clone() if gaussians._features_dc.grad is not None else None,
-            #     'features_rest': gaussians._features_rest.grad.detach().clone() if gaussians._features_rest.grad is not None else None,
-            # }
+            after_mask = {g['name']: g['params'][0].detach().clone() for g in gaussians.optimizer.param_groups}
+
+            grads_mask = {
+                'xyz': gaussians._xyz.grad.detach().clone() if gaussians._xyz.grad is not None else None,
+                'scaling': gaussians._scaling.grad.detach().clone() if gaussians._scaling.grad is not None else None,
+                'rotation': gaussians._rotation.grad.detach().clone() if gaussians._rotation.grad is not None else None,
+                'opacity': gaussians._opacity.grad.detach().clone() if gaussians._opacity.grad is not None else None,
+                'features_dc': gaussians._features_dc.grad.detach().clone() if gaussians._features_dc.grad is not None else None,
+                'features_rest': gaussians._features_rest.grad.detach().clone() if gaussians._features_rest.grad is not None else None,
+            }
 
 
-            # print("=== Masked grads ===")
-            # for g in gaussians.optimizer.param_groups:
-            #     p = g['params'][0]
-            #     gradnorm = p.grad.norm().item() if p.grad is not None else 0
-            #     print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
+            print("=== Masked grads ===")
+            for g in gaussians.optimizer.param_groups:
+                p = g['params'][0]
+                gradnorm = p.grad.norm().item() if p.grad is not None else 0
+                print(f"{g['name']:10s} | grad: {gradnorm:.6e}")
 
-            # gaussians.optimizer.step()
+            print("=== Parameter delta comparison: Base vs. Masked ===")
+            for g in gaussians.optimizer.param_groups:
+                name = g['name']
+                delta_nomask = (after_nomask[name] - base_params[name]).norm().item()
+                delta_mask = (after_mask[name] - base_params[name]).norm().item()
+                denom = base_params[name].norm().item() + 1e-8
+                print(f"{name:10s} | Δ_nomask: {100*delta_nomask/denom:8.4f}% | Δ_mask: {100*delta_mask/denom:8.4f}%")
 
-            # print("=== Masked param deltas ===")
-            # for g in gaussians.optimizer.param_groups:
-            #     name = g['name']
-            #     new = g['params'][0]
-            #     delta = (new - old_params_mask[name]).norm().item()
-            #     denom = old_params_mask[name].norm().item() + 1e-8
-            #     delta_pct = 100 * delta / denom
-            #     print(f"{name:10s} | Δparam: {delta_pct:8.4f}%")
-                
 
-            # print("*"*20)
-
-            # gaussians.optimizer.zero_grad(set_to_none=True)
-
-            # plt.subplot(1,2,1)
-            # plt.title("Unmasked grads")
-            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
-            # gaussians._xyz[:,1].detach().cpu().numpy(),
-            # c=grad_mag_nomask.detach().cpu().numpy(),
-            # cmap='inferno', s=2)
-
-            # plt.subplot(1,2,2)
-            # plt.title("Masked grads")
-            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
-            # gaussians._xyz[:,1].detach().cpu().numpy(),
-            # c=grad_mag_mask.detach().cpu().numpy(),
-            # cmap='inferno', s=2)
-            # plt.tight_layout()
-            # plt.show()
-
-            # plt.scatter(gaussians._xyz[:,0].detach().cpu().numpy(),
-            # gaussians._xyz[:,1].detach().cpu().numpy(),
-            # c=(grad_mag_mask - grad_mag_nomask).detach().cpu().numpy(),
-            # cmap='bwr', s=2)
-            # plt.show()
+            plt.rcParams['font.size'] = 32
+            plt.figure(figsize=(6,4))
+            plt.title(f"XYZ Tensor Gradient: {int(keep_prob*100)}% Masking")
+            plt.hist(grads_nomask['xyz'].cpu().numpy().ravel(), bins=10, alpha=0.5, label='unmasked', color='tab:red')
+            plt.hist(grads_mask['xyz'].cpu().numpy().ravel(), bins=10, alpha=0.5, label='masked', color='tab:blue')
+            plt.legend()
+            plt.show()
+            exit(-1)
 
             loss = loss_mask
             losses.append(loss.item())
@@ -290,7 +280,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     progress_bar.close()
 
                 # Log and save
-                l1,psnr = training_report(tb_writer, iteration, loss_mask, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+                l1,psnr = training_report(tb_writer, iteration, loss, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
                 if l1 is not None:
                     l1s.append(l1)
                     psnrs.append(psnr)
@@ -354,6 +344,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         pickle.dump(data_dict,f)
 
 def prepare_output_and_logger(args):    
+
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
