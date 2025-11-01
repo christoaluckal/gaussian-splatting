@@ -164,9 +164,9 @@ class Splitter:
                 split_frac_idxs.append(split_frac_idxs[-1] + count)
 
             print(split_frac_idxs)
-            ans = input('Good?')
-            if ans == 'n':
-                exit(-1)
+            # ans = input('Good?')
+            # if ans == 'n':
+            #     exit(-1)
 
             image_row = 0
             curr_block = 0

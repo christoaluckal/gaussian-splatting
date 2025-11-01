@@ -47,6 +47,7 @@ class Splitter:
                     os.remove(os.path.join(root, f))
 
     def write_model(self, name, img_dict, point_dict, num_test=0):
+        print("Writing")
         m1_im = os.path.join(self.new_scene_path, name, 'sparse','0','images.txt')
         m1_test = os.path.join(self.new_scene_path, name, 'sparse','0','test.txt')
         m1_pt = os.path.join(self.new_scene_path, name, 'sparse','0','points3D.txt')
@@ -110,9 +111,36 @@ class Splitter:
         self.copy_and_remove(valid_files,res4)
         self.copy_and_remove(valid_files,res8)
 
+    def split_points_radial(self, proj_xy, image_names, num_splits=4):
+        """
+        Split projected 2D points into angular (radial) wedges.
+        Returns:
+            image_groups: dict mapping image_name -> group_id (1..num_splits)
+            bin_edges: array of wedge boundary angles (radians)
+        """
+        # Center points
+        mean = np.mean(proj_xy, axis=0)
+        centered = proj_xy - mean
+
+        # Compute angle in radians
+        angles = np.arctan2(centered[:, 1], centered[:, 0])  # range [-π, π]
+        angles = (angles + 2 * np.pi) % (2 * np.pi)          # normalize to [0, 2π)
+
+        # Define angular bins
+        bin_edges = np.linspace(0, 2 * np.pi, num_splits + 1)
+
+        # Assign group by which wedge the angle falls in
+        image_groups = {}
+        bin_indices = np.digitize(angles, bin_edges, right=False)
+        bin_indices[bin_indices > num_splits] = num_splits  # fix edge case
+
+        for name, group in zip(image_names, bin_indices):
+            image_groups[name] = int(group-1)
+
+        return image_groups, bin_edges, mean
 
 
-    def build_model(self, model1_name=None, model2_name=None, split_frame=None, num_test=0):
+    def build_model(self, num_split=2, num_test=0):
         i = 0
         xyz = []
         image_names = []
@@ -156,107 +184,61 @@ class Splitter:
 
         proj_xy = xyz[:, :2]  # project to XY plane
 
-        minx, miny = np.min(proj_xy, axis=0)
-        maxx, maxy = np.max(proj_xy, axis=0)
+        image_groups, bin_edges, center = self.split_points_radial(proj_xy, image_names, num_splits=num_split)
 
-        # --- choose one diagonal ---
-        # (1) bottom-left to top-right
-        x1, y1 = minx, miny
-        x2, y2 = maxx, maxy
-
-        # # (2) top-left to bottom-right (uncomment to use)
-        # x1, y1 = minx, maxy
-        # x2, y2 = maxx, miny
-
-        # line coefficients: ax + by + c = 0
-        a = y1 - y2
-        b = x2 - x1
-        c = x1*y2 - x2*y1
-
-        # signed distance
-        d = proj_xy @ np.array([a, b]) + c
-
-        group1 = proj_xy[d > 0]
-        group2 = proj_xy[d < 0]
-        on_line = proj_xy[np.isclose(d, 0)]
-
-        print("Group 1:", group1.shape[0], "points")
-        print("Group 2:", group2.shape[0], "points")
-        print("On line:", on_line.shape[0], "points")
-
-
-        # plot
-        fig = plt.figure()
-        ax = fig.add_subplot(projection='3d')
-        ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2])
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        plt.show()
-
-        image_groups = {}  # image_name -> 1 or 2
-
-        # after you compute proj_xy and d
-        for name, dist in zip(image_names, d):
-            if dist >= 0:
-                image_groups[name] = 1
-            else:
-                image_groups[name] = 2
-
-
-        m1_image_p2d = {}
-        m2_image_p2d = {}
-        self.id_dict = {}
+        group_image_p2d = {i: {} for i in range(num_split)}
+        group_p3d = {i: {} for i in range(num_split)}
+        id_dict = {i: {} for i in range(num_split)}
 
         with open(self.images, 'r') as f:
             image_data = f.readlines()[4:]
             i = 0
             while i < len(image_data):
                 iv_row = i
-                p2d_row = i+1
-
+                p2d_row = i + 1
                 iv_row_data = image_data[iv_row].split()
                 image_name = iv_row_data[-1]
                 p2d_data = np.array(image_data[p2d_row].split(), dtype=float).reshape(-1, 3)
 
-                if image_groups[image_name] == 1:
-                    # keep IDs so we can filter points3D later
-                    p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
-                    self.id_dict.update({str(id_): True for id_ in p2d_ids})
-                    m1_image_p2d[image_name] = [iv_row_data, p2d_data]
-                else:
-                    curr_ids = p2d_data[:, 2].astype(int).astype(str)
-                    # remove IDs that were already assigned to group1
-                    mask = ~np.isin(curr_ids, list(self.id_dict.keys()))
-                    filtered_arr = p2d_data[mask]
-                    m2_image_p2d[image_name] = [iv_row_data, filtered_arr]
+                group_idx = image_groups[image_name]
+                p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
+                id_dict[group_idx].update({str(id_): True for id_ in p2d_ids})
+                group_image_p2d[group_idx][image_name] = [iv_row_data, p2d_data]
 
                 i += 2
 
-        m1_p3d = {}
-        m2_p3d = {}
+        # assign 3D points
         with open(self.points3D, 'r') as f:
             points_data = f.readlines()[3:]
-            i = 0
+            for line in points_data:
+                point_idx = line.split()[0]
+                assigned = False
+                for g, ids in id_dict.items():
+                    if point_idx in ids:
+                        group_p3d[g][point_idx] = line.split()[1:]
+                        assigned = True
+                        break
+                if not assigned:
+                    # optionally assign to last group
+                    group_p3d[num_split][point_idx] = line.split()[1:]
 
-            while i < len(points_data):
-                point_row = points_data[i]
-                point_idx = point_row.split()[0]
-                if str(point_idx) in self.id_dict:
-                    m1_p3d[point_idx] = point_row.split()[1:]
-                else:
-                    m2_p3d[point_idx] = point_row.split()[1:]
-                i+=1
+        # plt.scatter(proj_xy[:,0], proj_xy[:,1], c=[image_groups[n]-1 for n in image_names], cmap='tab10')
+        # for b in bin_edges:
+        #     plt.axvline(b, color='k', linestyle='--')
+        # plt.xlabel('X'); plt.ylabel('Y')
+        # plt.show()
 
 
         try:
-            os.makedirs(os.path.join(self.new_scene_path, model1_name, 'sparse','0'),exist_ok=True)
-            os.makedirs(os.path.join(self.new_scene_path, model2_name, 'sparse','0'),exist_ok=True)
-        except:
+            for i in range(num_split):
+                os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
+                self.write_model(f'model{i}', group_image_p2d[i], group_p3d[i],num_test)
+        except Exception as e:
+            print(e)
             pass
 
-        self.write_model(model1_name, m1_image_p2d, m1_p3d,num_test)
-        self.write_model(model2_name, m2_image_p2d, m2_p3d,num_test)
+        
+
 
 
 
@@ -268,13 +250,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s',type=str,required=True)
     parser.add_argument('-m',type=str,required=True)
-    parser.add_argument('-m1',type=str,default='model0')
-    parser.add_argument('-m2',type=str,default='model1')
-    parser.add_argument('-f',type=str,default=None)
+    parser.add_argument('--split_num',type=int,default=1)
     parser.add_argument('--num_test',type=int,default=0)
     args = parser.parse_args()
+    for arg_name, arg_value in sorted(vars(args).items()):
+        print(f"  {arg_name}: {arg_value}")
     src_scene = os.path.abspath(args.s)
     dst_scene = os.path.abspath(args.m)
     s = Splitter(scene_path=src_scene,
                  new_scene_path=dst_scene)
-    s.build_model(model1_name=args.m1,model2_name=args.m2,split_frame=args.f,num_test=args.num_test)
+    s.build_model(num_split=args.split_num, num_test=args.num_test)
