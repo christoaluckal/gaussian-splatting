@@ -164,7 +164,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
                 if iteration % 10 == 0:
-                    progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                    progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "NG": f"{gaussians.get_xyz.shape[0]}"})
                     progress_bar.update(10)
                 if iteration == opt.iterations:
                     progress_bar.close()
@@ -191,7 +191,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                         gaussians.reset_opacity()
 
-                if iteration % args.splitter_itr == 0 and not def_flag and iteration > args.add_new_model_itr:
+                if iteration % args.splitter_itr == 0 and not def_flag:
                     print("Adding new gaussians")
                     scene.extend()
                     viewpoint_stack = scene.getTrainCameras().copy()
