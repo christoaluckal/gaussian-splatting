@@ -14,12 +14,6 @@ import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
-import numpy as np
-
-def create_random_mask(width,height,fraction=0.3):
-    mask = (np.random.rand(height, width) > fraction).astype(float).flatten()
-    return mask
-
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, separate_sh = False, override_color = None, use_trained_exp=False):
     """
@@ -54,11 +48,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         debug=pipe.debug,
         antialiasing=pipe.antialiasing
     )
-
-    # Create Random mask
-    mask = create_random_mask(int(viewpoint_camera.image_width),int(viewpoint_camera.image_height),fraction=0.0)
-    mask = torch.Tensor(mask).to(bg_color.device)
-
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
