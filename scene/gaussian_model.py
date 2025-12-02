@@ -39,7 +39,7 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree, probabilistic=False): 
+    def __init__(self, sh_degree, probabilistic=False, num_models=10, top_K=2): 
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
         self._xyz = torch.empty(0)
@@ -60,11 +60,12 @@ class GaussianModel:
         self.model_id = 0
         self.probabilistic = probabilistic
 
-        if self.probabilistic:
-            self.n_models = 10
+        if self.probabilistic == True:
+            print("Initializing probabilistic Gaussian Model with {} models and top K={}".format(num_models, top_K))
+            self.n_models = num_models
             self.pri_std = -6
             self.pri_width = 0.1
-            self.M = 2
+            self.M = top_K
 
             self.pri_opacity_std = 1.85
             self.pri_opacity_mean = 2
@@ -116,7 +117,7 @@ class GaussianModel:
 
     @property
     def get_scaling(self): 
-        if self.probabilistic:
+        if self.probabilistic == True:
             scale = self.compute_scal()
         else:
             scale = self.scaling_activation(self._scaling)
@@ -138,7 +139,7 @@ class GaussianModel:
         return scal
 
     def compute_kl_uniform_scal(self): 
-        if self.probabilistic:
+        if self.probabilistic == True:
             sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
             width = self.offsets["_scaling_offset"][...,sample_model_ids].mean(dim=-1)
             width = torch.nn.functional.softplus(width).clamp_(1e-2, 1e2)
@@ -165,7 +166,7 @@ class GaussianModel:
 
     @property
     def get_xyz(self):
-        if self.probabilistic:
+        if self.probabilistic == True:
             xyz = self.compute_xyz()
             return xyz
         else:
@@ -190,7 +191,7 @@ class GaussianModel:
             return self._xyz
 
     def compute_kl_xyz(self): 
-        if self.probabilistic:
+        if self.probabilistic == True:
             sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
             std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
             std = torch.nn.functional.softplus(std)
@@ -218,7 +219,7 @@ class GaussianModel:
     @property
     def get_opacity(self): 
         opacity = self.compute_opacity()
-        if self.probabilistic:
+        if self.probabilistic == True:
             sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
             std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
             std = torch.nn.functional.softplus(std)
@@ -234,7 +235,7 @@ class GaussianModel:
             return opacity
 
     def compute_kl_opacity(self):
-        if self.probabilistic:
+        if self.probabilistic == True:
             sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
             std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
             std = torch.nn.functional.softplus(std)
@@ -335,7 +336,7 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}, 
         ]
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             lr_scales = self.lr_scales
             l_offset = []
 
@@ -381,7 +382,7 @@ class GaussianModel:
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             if not with_offsets:
                 return l
 
@@ -412,7 +413,7 @@ class GaussianModel:
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             if with_offsets: 
                 _xyz_offset = self.offsets["_xyz_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
                 _scaling_offset = self.offsets["_scaling_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
@@ -477,7 +478,7 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             xyz_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("xyz_offset")]
             xyz_offset_names = sorted(xyz_offset_names, key = lambda x: int(x.split('_')[-1]))
             xyz_offset = np.zeros((xyz.shape[0], len(xyz_offset_names)))
@@ -550,7 +551,7 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             for name in self.offsets.keys(): 
                 self.offsets[name] = optimizable_tensors[name]
 
@@ -592,10 +593,10 @@ class GaussianModel:
         if new_offset:
             d = {**d, **new_offset}
         else:
-            if self.probabilistic:
+            if self.probabilistic == True:
                 self.init_offset(size=self._xyz.shape[0]+new_xyz.shape[0])
             self.training_setup(opt_params)
-            if self.probabilistic:
+            if self.probabilistic == True:
                 d = {**d, **self.offsets}
 
         
@@ -607,7 +608,7 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             if new_offset:
                 for name in self.offsets.keys(): 
                     self.offsets[name] = optimizable_tensors[name]
@@ -647,7 +648,7 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_offset_param = None
-        if self.probabilistic:
+        if self.probabilistic == True:
             new_offset_param = {}        
             for name in self.offsets.keys(): 
                 n_dim = len(self.offsets[name].shape)
@@ -661,7 +662,7 @@ class GaussianModel:
 
         prune_filter = torch.cat([selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)])
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             self.mr_list = self.mr_list[~prune_filter]
         self.prune_points(prune_filter)
 
@@ -679,7 +680,7 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask]
 
         new_offset_param = None
-        if self.probabilistic:
+        if self.probabilistic == True:
             new_offset_param = {}        
             for name in self.offsets.keys(): 
                 new_offset_param[name] = self.offsets[name][selected_pts_mask, ...]
@@ -701,7 +702,7 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 
-        if self.probabilistic:
+        if self.probabilistic == True:
             self.mr_list = self.mr_list[~prune_mask]
         self.prune_points(prune_mask)
         torch.cuda.empty_cache()
