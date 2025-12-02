@@ -39,7 +39,7 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree): 
+    def __init__(self, sh_degree, probabilistic=False): 
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
         self._xyz = torch.empty(0)
@@ -58,22 +58,24 @@ class GaussianModel:
         self.iteration = 0
         self._feat_unc = torch.empty(0)
         self.model_id = 0
+        self.probabilistic = probabilistic
 
-        self.n_models = 10
-        self.pri_std = -6
-        self.pri_width = 0.1
-        self.M = 2
+        if self.probabilistic:
+            self.n_models = 10
+            self.pri_std = -6
+            self.pri_width = 0.1
+            self.M = 2
 
-        self.pri_opacity_std = 1.85
-        self.pri_opacity_mean = 2
+            self.pri_opacity_std = 1.85
+            self.pri_opacity_mean = 2
 
-        self.lr_scales = [0.1, 0.1, 0.1]
+            self.lr_scales = [0.1, 0.1, 0.1]
 
-        self.spawn_interval = 1000
-        self.spawn_percent_base = 0.01
-        self.spawn_min_opacity = 0.0005
+            self.spawn_interval = 1000
+            self.spawn_percent_base = 0.01
+            self.spawn_min_opacity = 0.0005
 
-        self.offsets = {'_xyz_offset':None,'_scaling_offset':None,'_opacity_offset': None}
+            self.offsets = {'_xyz_offset':None,'_scaling_offset':None,'_opacity_offset': None}
 
         self.setup_functions()
 
@@ -114,7 +116,10 @@ class GaussianModel:
 
     @property
     def get_scaling(self): 
-        scale = self.compute_scal()
+        if self.probabilistic:
+            scale = self.compute_scal()
+        else:
+            scale = self.scaling_activation(self._scaling)
         return scale
 
     def compute_scal(self): 
@@ -133,19 +138,22 @@ class GaussianModel:
         return scal
 
     def compute_kl_uniform_scal(self): 
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
-        width = self.offsets["_scaling_offset"][...,sample_model_ids].mean(dim=-1)
-        width = torch.nn.functional.softplus(width).clamp_(1e-2, 1e2)
-        left = self.offsets["_scaling_offset"][...,sample_model_ids+self.n_models].mean(dim=-1)
+        if self.probabilistic:
+            sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+            width = self.offsets["_scaling_offset"][...,sample_model_ids].mean(dim=-1)
+            width = torch.nn.functional.softplus(width).clamp_(1e-2, 1e2)
+            left = self.offsets["_scaling_offset"][...,sample_model_ids+self.n_models].mean(dim=-1)
 
-        pri_left = 1-self.pri_width
+            pri_left = 1-self.pri_width
 
-        right = left + width
-        prior_right = 1
+            right = left + width
+            prior_right = 1
 
-        kl = torch.abs(left - pri_left) + torch.abs(right - prior_right)
+            kl = torch.abs(left - pri_left) + torch.abs(right - prior_right)
 
-        return kl.mean()
+            return kl.mean()
+        else:
+            return torch.tensor(0)
 
     @property
     def get_rotation(self):
@@ -157,8 +165,12 @@ class GaussianModel:
 
     @property
     def get_xyz(self):
-        xyz = self.compute_xyz()
-        return xyz
+        if self.probabilistic:
+            xyz = self.compute_xyz()
+            return xyz
+        else:
+            return self._xyz
+    
     def compute_xyz(self):
         try:
             sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
@@ -178,18 +190,21 @@ class GaussianModel:
             return self._xyz
 
     def compute_kl_xyz(self): 
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
-        std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
-        std = torch.nn.functional.softplus(std)
-        mean = self.offsets["_xyz_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
+        if self.probabilistic:
+            sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+            std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
+            std = torch.nn.functional.softplus(std)
+            mean = self.offsets["_xyz_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
 
-        pri_std = torch.nn.functional.softplus(torch.tensor(self.pri_std).float()).item()
-        pri_mean, pri_std = torch.zeros_like(mean), pri_std*torch.ones_like(std)
+            pri_std = torch.nn.functional.softplus(torch.tensor(self.pri_std).float()).item()
+            pri_mean, pri_std = torch.zeros_like(mean), pri_std*torch.ones_like(std)
 
-        log_sigma_pri, log_sigma_post = torch.log(pri_std), torch.log(std)
-        kl = log_sigma_pri - log_sigma_post + \
-        (torch.exp(log_sigma_post)**2 + (mean-pri_mean)**2)/(2*torch.exp(log_sigma_pri)**2) - 0.5
-        return kl.mean()
+            log_sigma_pri, log_sigma_post = torch.log(pri_std), torch.log(std)
+            kl = log_sigma_pri - log_sigma_post + \
+            (torch.exp(log_sigma_post)**2 + (mean-pri_mean)**2)/(2*torch.exp(log_sigma_pri)**2) - 0.5
+            return kl.mean()
+        else:
+            return torch.tensor(0)
 
     @property
     def get_features(self):
@@ -203,34 +218,39 @@ class GaussianModel:
     @property
     def get_opacity(self): 
         opacity = self.compute_opacity()
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
-        std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
-        std = torch.nn.functional.softplus(std)
-        mean = self.offsets["_opacity_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
+        if self.probabilistic:
+            sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+            std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
+            std = torch.nn.functional.softplus(std)
+            mean = self.offsets["_opacity_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
 
-        p_logit = (std*torch.randn_like(opacity).cuda().requires_grad_(True) + mean)
-        offset_opc = torch.sigmoid(p_logit / self.tmp)
-        offset_opc = self.mr_list*offset_opc+(1-self.mr_list)*torch.ones_like(offset_opc).cuda().requires_grad_(True)
+            p_logit = (std*torch.randn_like(opacity).cuda().requires_grad_(True) + mean)
+            offset_opc = torch.sigmoid(p_logit / self.tmp)
+            offset_opc = self.mr_list*offset_opc+(1-self.mr_list)*torch.ones_like(offset_opc).cuda().requires_grad_(True)
 
-        opacity = opacity * offset_opc
-
-        return opacity
+            opacity = opacity * offset_opc
+            return opacity
+        else:
+            return opacity
 
     def compute_kl_opacity(self):
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
-        std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
-        std = torch.nn.functional.softplus(std)
-        mean = self.offsets["_opacity_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
+        if self.probabilistic:
+            sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+            std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
+            std = torch.nn.functional.softplus(std)
+            mean = self.offsets["_opacity_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
 
-        pri_std = torch.nn.functional.softplus(torch.tensor(self.pri_opacity_std).float()).item()
-        pri_mean = self.pri_opacity_mean
+            pri_std = torch.nn.functional.softplus(torch.tensor(self.pri_opacity_std).float()).item()
+            pri_mean = self.pri_opacity_mean
 
-        pri_mean, pri_std = pri_mean * torch.ones_like(mean), pri_std * torch.ones_like(std)
+            pri_mean, pri_std = pri_mean * torch.ones_like(mean), pri_std * torch.ones_like(std)
 
-        log_sigma_pri, log_sigma_post = torch.log(pri_std), torch.log(std)
-        kl = log_sigma_pri - log_sigma_post + \
-        (torch.exp(log_sigma_post)**2 + (mean-pri_mean)**2)/(2*torch.exp(log_sigma_pri)**2) - 0.5
-        return kl.mean()
+            log_sigma_pri, log_sigma_post = torch.log(pri_std), torch.log(std)
+            kl = log_sigma_pri - log_sigma_post + \
+            (torch.exp(log_sigma_post)**2 + (mean-pri_mean)**2)/(2*torch.exp(log_sigma_pri)**2) - 0.5
+            return kl.mean()
+        else:
+            return torch.tensor(0)
 
 
     def compute_opacity(self):
@@ -315,22 +335,23 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}, 
         ]
 
-        lr_scales = self.lr_scales
-        l_offset = []
+        if self.probabilistic:
+            lr_scales = self.lr_scales
+            l_offset = []
 
-        _l_offset = [
-            {'params': [], 'lr': lr_scales[0]*training_args.position_lr_init * self.spatial_lr_scalar, "name": "_xyz_offset"}, 
-            {'params': [], 'lr': lr_scales[1]*training_args.opacity_lr, "name": "_scaling_offset"}, 
-            {'params': [], 'lr': lr_scales[2]*training_args.rotation_lr, "name": "_opacity_offset"}, 
-        ]
+            _l_offset = [
+                {'params': [], 'lr': lr_scales[0]*training_args.position_lr_init * self.spatial_lr_scalar, "name": "_xyz_offset"}, 
+                {'params': [], 'lr': lr_scales[1]*training_args.opacity_lr, "name": "_scaling_offset"}, 
+                {'params': [], 'lr': lr_scales[2]*training_args.rotation_lr, "name": "_opacity_offset"}, 
+            ]
 
-        j=0
-        for i in range(len(_l_offset)): 
-            if lr_scales[i] != 0.0: 
-                _l_offset[i]['params'] = [self.offsets[list(self.offsets.keys())[j]]]
-                l_offset += [_l_offset[i]]
-                j+=1
-        l = l + l_offset
+            j=0
+            for i in range(len(_l_offset)): 
+                if lr_scales[i] != 0.0: 
+                    _l_offset[i]['params'] = [self.offsets[list(self.offsets.keys())[j]]]
+                    l_offset += [_l_offset[i]]
+                    j+=1
+            l = l + l_offset
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scalar,
@@ -360,17 +381,18 @@ class GaussianModel:
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
 
-        if not with_offsets:
-            return l
+        if self.probabilistic:
+            if not with_offsets:
+                return l
 
-        for i in range(self.offsets["_xyz_offset"].shape[1]*self.offsets["_xyz_offset"].shape[2]):
-            l.append('xyz_offset_{}'.format(i))
-        for i in range(self.offsets["_scaling_offset"].shape[1]*self.offsets["_scaling_offset"].shape[2]):
-            l.append('scaling_offset_{}'.format(i))
-        for i in range(self.offsets["_opacity_offset"].shape[1]*self.offsets["_opacity_offset"].shape[2]):
-            l.append('opacity_offset_{}'.format(i))
+            for i in range(self.offsets["_xyz_offset"].shape[1]*self.offsets["_xyz_offset"].shape[2]):
+                l.append('xyz_offset_{}'.format(i))
+            for i in range(self.offsets["_scaling_offset"].shape[1]*self.offsets["_scaling_offset"].shape[2]):
+                l.append('scaling_offset_{}'.format(i))
+            for i in range(self.offsets["_opacity_offset"].shape[1]*self.offsets["_opacity_offset"].shape[2]):
+                l.append('opacity_offset_{}'.format(i))
 
-        l.append('mr')
+            l.append('mr')
 
         return l
 
@@ -390,13 +412,14 @@ class GaussianModel:
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
 
-        if with_offsets: 
-            _xyz_offset = self.offsets["_xyz_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
-            _scaling_offset = self.offsets["_scaling_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
-            _opacity_offset = self.offsets["_opacity_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
+        if self.probabilistic:
+            if with_offsets: 
+                _xyz_offset = self.offsets["_xyz_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
+                _scaling_offset = self.offsets["_scaling_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
+                _opacity_offset = self.offsets["_opacity_offset"].detach().flatten(start_dim=1).contiguous().cpu().numpy()
 
-            attributes = np.concatenate((attributes, _xyz_offset, _scaling_offset, _opacity_offset), axis=1)
-            attributes = np.concatenate((attributes, self.mr_list.detach().cpu().numpy()), axis=1)
+                attributes = np.concatenate((attributes, _xyz_offset, _scaling_offset, _opacity_offset), axis=1)
+                attributes = np.concatenate((attributes, self.mr_list.detach().cpu().numpy()), axis=1)
 
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
@@ -454,33 +477,33 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
+        if self.probabilistic:
+            xyz_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("xyz_offset")]
+            xyz_offset_names = sorted(xyz_offset_names, key = lambda x: int(x.split('_')[-1]))
+            xyz_offset = np.zeros((xyz.shape[0], len(xyz_offset_names)))
+            for idx, attr_name in enumerate(xyz_offset_names):
+                xyz_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            xyz_offset = xyz_offset.reshape((xyz_offset.shape[0], 3, len(xyz_offset_names) // 3))
 
-        xyz_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("xyz_offset")]
-        xyz_offset_names = sorted(xyz_offset_names, key = lambda x: int(x.split('_')[-1]))
-        xyz_offset = np.zeros((xyz.shape[0], len(xyz_offset_names)))
-        for idx, attr_name in enumerate(xyz_offset_names):
-            xyz_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        xyz_offset = xyz_offset.reshape((xyz_offset.shape[0], 3, len(xyz_offset_names) // 3))
+            scaling_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scaling_offset")]
+            scaling_offset_names = sorted(scaling_offset_names, key = lambda x: int(x.split('_')[-1]))
+            scaling_offset = np.zeros((xyz.shape[0], len(scaling_offset_names)))
+            for idx, attr_name in enumerate(scaling_offset_names):
+                scaling_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            scaling_offset = scaling_offset.reshape((scaling_offset.shape[0], 3, len(scaling_offset_names) // 3))
 
-        scaling_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scaling_offset")]
-        scaling_offset_names = sorted(scaling_offset_names, key = lambda x: int(x.split('_')[-1]))
-        scaling_offset = np.zeros((xyz.shape[0], len(scaling_offset_names)))
-        for idx, attr_name in enumerate(scaling_offset_names):
-            scaling_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        scaling_offset = scaling_offset.reshape((scaling_offset.shape[0], 3, len(scaling_offset_names) // 3))
+            opacity_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("opacity_offset")]
+            opacity_offset_names = sorted(opacity_offset_names, key = lambda x: int(x.split('_')[-1]))
+            opacity_offset = np.zeros((xyz.shape[0], len(opacity_offset_names)))
+            for idx, attr_name in enumerate(opacity_offset_names):
+                opacity_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            opacity_offset = opacity_offset.reshape((opacity_offset.shape[0], 1, len(opacity_offset_names)))
 
-        opacity_offset_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("opacity_offset")]
-        opacity_offset_names = sorted(opacity_offset_names, key = lambda x: int(x.split('_')[-1]))
-        opacity_offset = np.zeros((xyz.shape[0], len(opacity_offset_names)))
-        for idx, attr_name in enumerate(opacity_offset_names):
-            opacity_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        opacity_offset = opacity_offset.reshape((opacity_offset.shape[0], 1, len(opacity_offset_names)))
+            self.offsets["_xyz_offset"] = nn.Parameter(torch.tensor(xyz_offset, dtype=torch.float, device="cuda").requires_grad_(True))
+            self.offsets["_scaling_offset"] = nn.Parameter(torch.tensor(scaling_offset, dtype=torch.float, device="cuda").requires_grad_(True))
+            self.offsets["_opacity_offset"] = nn.Parameter(torch.tensor(opacity_offset, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        self.offsets["_xyz_offset"] = nn.Parameter(torch.tensor(xyz_offset, dtype=torch.float, device="cuda").requires_grad_(True))
-        self.offsets["_scaling_offset"] = nn.Parameter(torch.tensor(scaling_offset, dtype=torch.float, device="cuda").requires_grad_(True))
-        self.offsets["_opacity_offset"] = nn.Parameter(torch.tensor(opacity_offset, dtype=torch.float, device="cuda").requires_grad_(True))
-
-        self.mr_list = torch.tensor(np.asarray(plydata.elements[0]["mr"])[..., np.newaxis]).float().cuda().requires_grad_(False)
+            self.mr_list = torch.tensor(np.asarray(plydata.elements[0]["mr"])[..., np.newaxis]).float().cuda().requires_grad_(False)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -527,8 +550,9 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        for name in self.offsets.keys(): 
-            self.offsets[name] = optimizable_tensors[name]
+        if self.probabilistic:
+            for name in self.offsets.keys(): 
+                self.offsets[name] = optimizable_tensors[name]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -568,9 +592,11 @@ class GaussianModel:
         if new_offset:
             d = {**d, **new_offset}
         else:
-            self.init_offset(size=self._xyz.shape[0]+new_xyz.shape[0])
+            if self.probabilistic:
+                self.init_offset(size=self._xyz.shape[0]+new_xyz.shape[0])
             self.training_setup(opt_params)
-            d = {**d, **self.offsets}
+            if self.probabilistic:
+                d = {**d, **self.offsets}
 
         
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
@@ -581,9 +607,10 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        if new_offset:
-            for name in self.offsets.keys(): 
-                self.offsets[name] = optimizable_tensors[name]
+        if self.probabilistic:
+            if new_offset:
+                for name in self.offsets.keys(): 
+                    self.offsets[name] = optimizable_tensors[name]
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -619,20 +646,23 @@ class GaussianModel:
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+        new_offset_param = None
+        if self.probabilistic:
+            new_offset_param = {}        
+            for name in self.offsets.keys(): 
+                n_dim = len(self.offsets[name].shape)
+                new_shape = [1 for i in range(n_dim)]
+                new_shape[0] = N
+                new_offset_param[name] = self.offsets[name][selected_pts_mask, ...].repeat(*new_shape)
 
-        new_offset = {}        
-        for name in self.offsets.keys(): 
-            n_dim = len(self.offsets[name].shape)
-            new_shape = [1 for i in range(n_dim)]
-            new_shape[0] = N
-            new_offset[name] = self.offsets[name][selected_pts_mask, ...].repeat(*new_shape)
+            self.mr_list = torch.cat([self.mr_list, torch.ones_like(self.mr_list[selected_pts_mask].repeat(N,1))], dim=0)
 
-        self.mr_list = torch.cat([self.mr_list, torch.ones_like(self.mr_list[selected_pts_mask].repeat(N,1))], dim=0)
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset=new_offset_param)
 
         prune_filter = torch.cat([selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)])
 
-        self.mr_list = self.mr_list[~prune_filter]
+        if self.probabilistic:
+            self.mr_list = self.mr_list[~prune_filter]
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
@@ -648,12 +678,15 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        new_offset = {}        
-        for name in self.offsets.keys(): 
-            new_offset[name] = self.offsets[name][selected_pts_mask, ...]
+        new_offset_param = None
+        if self.probabilistic:
+            new_offset_param = {}        
+            for name in self.offsets.keys(): 
+                new_offset_param[name] = self.offsets[name][selected_pts_mask, ...]
 
-        self.mr_list = torch.cat([self.mr_list, self.mr_list[selected_pts_mask]], dim=0)
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset)
+            self.mr_list = torch.cat([self.mr_list, self.mr_list[selected_pts_mask]], dim=0)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=new_offset_param)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, ):
         grads = self.xyz_gradient_accum / self.denom
@@ -668,7 +701,8 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 
-        self.mr_list = self.mr_list[~prune_mask]
+        if self.probabilistic:
+            self.mr_list = self.mr_list[~prune_mask]
         self.prune_points(prune_mask)
         torch.cuda.empty_cache()
 
