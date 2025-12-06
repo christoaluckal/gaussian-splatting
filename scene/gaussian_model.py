@@ -187,8 +187,8 @@ class GaussianModel:
 
         offset = torch.randn_like(xyz).cuda().requires_grad_(True)
         offset = offset*std+mean
-
-
+        # print(sample_model_ids)
+        # print(xyz.mean(), offset.mean(), std.mean(), mean.mean())
         xyz = xyz + self.mr_list*offset
         return xyz
         # except:
@@ -219,6 +219,21 @@ class GaussianModel:
         features_rest = self._features_rest
 
         return torch.cat((features_dc, features_rest), dim=1)
+    # def compute_features(self): 
+    #     features_dc = self._features_dc
+    #     features_rest = self._features_rest
+
+    #     # Normalize shapes so SH-dimension is dim=1 and RGB is dim=2
+    #     # Case 1: features are [N, 3, K] → transpose to [N, K, 3]
+    #     if features_dc.ndim == 3 and features_dc.shape[1] == 3 and features_dc.shape[2] == 1:
+    #         features_dc = features_dc.transpose(1, 2)  # [N,1,3]
+    #     if features_rest.ndim == 3 and features_rest.shape[1] == 3 and features_rest.shape[2] > 1:
+    #         features_rest = features_rest.transpose(1, 2)  # [N,K,3]
+
+    #     # You can also be extra defensive and assert the last dim is 3:
+    #     # assert features_dc.shape[2] == 3 and features_rest.shape[2] == 3
+
+    #     return torch.cat((features_dc, features_rest), dim=1)
 
     @property
     def get_opacity(self): 
