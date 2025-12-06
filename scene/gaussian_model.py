@@ -173,22 +173,26 @@ class GaussianModel:
             return self._xyz
     
     def compute_xyz(self):
-        try:
-            sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
-            xyz = self._xyz
-
-            std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
-            std = torch.nn.functional.softplus(std)
-
-            mean = self.offsets["_xyz_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
-
-            offset = torch.randn_like(xyz).cuda().requires_grad_(True)
-            offset = offset*std+mean
-
-            xyz = xyz + self.mr_list*offset
-            return xyz
-        except:
+        # try:
+        if self.offsets["_xyz_offset"] is None:
             return self._xyz
+        
+        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+        xyz = self._xyz
+
+        std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
+        std = torch.nn.functional.softplus(std)
+
+        mean = self.offsets["_xyz_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
+
+        offset = torch.randn_like(xyz).cuda().requires_grad_(True)
+        offset = offset*std+mean
+
+
+        xyz = xyz + self.mr_list*offset
+        return xyz
+        # except:
+        #     return self._xyz
 
     def compute_kl_xyz(self): 
         if self.probabilistic == True:
@@ -322,10 +326,18 @@ class GaussianModel:
         # self.init_offset()
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def training_setup(self, training_args):
+    def training_setup(self, training_args, size=0):
         self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        # self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        # self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        if size == 0:
+            self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+            self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        else:
+            self.xyz_gradient_accum = torch.zeros((size, 1), device="cuda")
+            self.denom = torch.zeros((size, 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scalar, "name": "xyz"},
@@ -560,47 +572,124 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
+    # def cat_tensors_to_optimizer(self, tensors_dict):
+    #     optimizable_tensors = {}
+    #     for group in self.optimizer.param_groups:
+    #         assert len(group["params"]) == 1
+    #         extension_tensor = tensors_dict[group["name"]]
+    #         stored_state = self.optimizer.state.get(group['params'][0], None)
+    #         if stored_state is not None:
+
+    #             stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
+    #             stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
+
+    #             del self.optimizer.state[group['params'][0]]
+    #             group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
+    #             self.optimizer.state[group['params'][0]] = stored_state
+
+    #             optimizable_tensors[group["name"]] = group["params"][0]
+    #         else:
+    #             group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
+    #             optimizable_tensors[group["name"]] = group["params"][0]
+
+    #     return optimizable_tensors
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
-            extension_tensor = tensors_dict[group["name"]]
+            name = group["name"]
+
+            # If there is no new tensor for this group, just keep it as-is.
+            # This happens e.g. for the *_offset groups during the initial
+            # densification, where offsets already have the correct full size.
+            if name not in tensors_dict:
+                optimizable_tensors[name] = group["params"][0]
+                continue
+
+            extension_tensor = tensors_dict[name]
             stored_state = self.optimizer.state.get(group['params'][0], None)
+
             if stored_state is not None:
+                # Extend Adam moments
+                stored_state["exp_avg"] = torch.cat(
+                    (stored_state["exp_avg"],
+                    torch.zeros_like(extension_tensor)),
+                    dim=0,
+                )
+                stored_state["exp_avg_sq"] = torch.cat(
+                    (stored_state["exp_avg_sq"],
+                    torch.zeros_like(extension_tensor)),
+                    dim=0,
+                )
 
-                stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
-                stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
+                old_param = group["params"][0]
+                del self.optimizer.state[old_param]
 
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
-
-                optimizable_tensors[group["name"]] = group["params"][0]
+                new_param = nn.Parameter(
+                    torch.cat((old_param, extension_tensor), dim=0).requires_grad_(True)
+                )
+                group["params"][0] = new_param
+                self.optimizer.state[new_param] = stored_state
+                optimizable_tensors[name] = new_param
             else:
-                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                optimizable_tensors[group["name"]] = group["params"][0]
+                old_param = group["params"][0]
+                new_param = nn.Parameter(
+                    torch.cat((old_param, extension_tensor), dim=0).requires_grad_(True)
+                )
+                group["params"][0] = new_param
+                optimizable_tensors[name] = new_param
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=None, opt_params=None):
-        d = {"xyz": new_xyz,
-        "f_dc": new_features_dc,
-        "f_rest": new_features_rest,
-        "opacity": new_opacities,
-        "scaling" : new_scaling,
-        "rotation" : new_rotation}
 
-        if new_offset:
-            d = {**d, **new_offset}
+    def densification_postfix(
+    self,
+    new_xyz,
+    new_features_dc,
+    new_features_rest,
+    new_opacities,
+    new_scaling,
+    new_rotation,
+    new_offset=None,
+    opt_params=None,
+    is_first=False,
+    ):
+        # Tensors only for the new points
+        d = {
+            "xyz": new_xyz,
+            "f_dc": new_features_dc,
+            "f_rest": new_features_rest,
+            "opacity": new_opacities,
+            "scaling": new_scaling,
+            "rotation": new_rotation,
+        }
+
+        if new_offset is not None:
+            # Called from densify_and_clone / densify_and_split:
+            # new_offset contains only NEW offsets, which should be appended
+            # to the existing offset tensors in the optimizer.
+            d.update(new_offset)
         else:
-            if self.probabilistic == True:
-                self.init_offset(size=self._xyz.shape[0]+new_xyz.shape[0])
-            self.training_setup(opt_params)
-            if self.probabilistic == True:
-                d = {**d, **self.offsets}
+            # Initial densification after correspondence-based init:
+            # corr_init.py already called:
+            #   new_size = all_new_xyz.shape[0] + gaussians._xyz.shape[0]
+            #   gaussians.init_offset(new_size)
+            #
+            # So self.offsets already have shape [new_size, ...].
+            # Here we just set up the optimizer with the correctly-sized tensors.
+            new_size = 0
+            if self.probabilistic:
+                new_size = self._xyz.shape[0] + new_xyz.shape[0]
 
-        
+            # training_setup will create the optimizer and attach the existing
+            # tensors (including offsets) without changing their values.
+            self.training_setup(opt_params, size=new_size)
+            # IMPORTANT: do NOT add self.offsets to `d` here.
+            # They are already full-size and already attached as optimizer params.
+            # Adding them again would double their length.
+
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
+
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
@@ -608,10 +697,10 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        if self.probabilistic == True:
-            if new_offset:
-                for name in self.offsets.keys(): 
-                    self.offsets[name] = optimizable_tensors[name]
+        # Only update self.offsets when we actually extended them
+        if self.probabilistic and (new_offset is not None):
+            for name in self.offsets.keys():
+                self.offsets[name] = optimizable_tensors[name]
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -658,7 +747,7 @@ class GaussianModel:
 
             self.mr_list = torch.cat([self.mr_list, torch.ones_like(self.mr_list[selected_pts_mask].repeat(N,1))], dim=0)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset=new_offset_param)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_first=False)
 
         prune_filter = torch.cat([selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)])
 
@@ -687,7 +776,7 @@ class GaussianModel:
 
             self.mr_list = torch.cat([self.mr_list, self.mr_list[selected_pts_mask]], dim=0)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=new_offset_param)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_first=False)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, ):
         grads = self.xyz_gradient_accum / self.denom

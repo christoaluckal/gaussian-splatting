@@ -46,7 +46,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=pipe.debug,
-        antialiasing=pipe.antialiasing
+        # antialiasing=pipe.antialiasing
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -144,8 +144,17 @@ def forward_k_times(viewpoint_camera, pc, pipe, bg_color, scaling_modifier = 1.0
     depth_mean = depths.mean(dim=0)
     depth_var = depths.var(dim=0)
 
+    print("Any NaNs?:", torch.isnan(rgbs).any().item())
+    print("Any Infs?:", torch.isinf(rgbs).any().item())
+    print(rgbs.shape) 
+    print("Images exactly equal?:", torch.equal(rgbs[0], rgbs[1]))
+    print("Max abs difference:", (rgbs[0] - rgbs[1]).abs().max().item())
+    print(f"@@@@@@@@ RGBS Min {rgbs.min().item()} Max {rgbs.max().item()} Mean {rgbs.mean().item()} @@@@@@@@@@@@")
+
     std = rgbs.std(dim=0)
     var = rgbs.var(dim=0)
+
+    print(f'@@@@@@@@ STD Min {std.min().item()} Max {std.max().item()} Mean {std.mean().item()} @@@@@@@@@@@@')
 
     mean = rgbs.mean(dim=0)
 
