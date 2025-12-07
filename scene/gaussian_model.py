@@ -39,7 +39,7 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree, probabilistic=False, num_models=10, top_K=2): 
+    def __init__(self, sh_degree, vanilla=False, probabilistic=False, num_models=10, top_K=2): 
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
         self._xyz = torch.empty(0)
@@ -59,6 +59,10 @@ class GaussianModel:
         self._feat_unc = torch.empty(0)
         self.model_id = 0
         self.probabilistic = probabilistic
+        self.vanilla = vanilla
+
+        if vanilla and probabilistic:
+            raise ValueError("Cannot have both vanilla and probabilistic set to True.")
 
         if self.probabilistic == True:
             print("Initializing probabilistic Gaussian Model with {} models and top K={}".format(num_models, top_K))
@@ -667,8 +671,9 @@ class GaussianModel:
     new_rotation,
     new_offset=None,
     opt_params=None,
-    is_first=False,
+    is_init=False
     ):
+        
         # Tensors only for the new points
         d = {
             "xyz": new_xyz,
@@ -698,7 +703,8 @@ class GaussianModel:
 
             # training_setup will create the optimizer and attach the existing
             # tensors (including offsets) without changing their values.
-            self.training_setup(opt_params, size=new_size)
+            if is_init:
+                self.training_setup(opt_params, size=new_size)
             # IMPORTANT: do NOT add self.offsets to `d` here.
             # They are already full-size and already attached as optimizer params.
             # Adding them again would double their length.
@@ -762,7 +768,7 @@ class GaussianModel:
 
             self.mr_list = torch.cat([self.mr_list, torch.ones_like(self.mr_list[selected_pts_mask].repeat(N,1))], dim=0)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_first=False)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_init=False)
 
         prune_filter = torch.cat([selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)])
 
@@ -790,10 +796,9 @@ class GaussianModel:
                 new_offset_param[name] = self.offsets[name][selected_pts_mask, ...]
 
             self.mr_list = torch.cat([self.mr_list, self.mr_list[selected_pts_mask]], dim=0)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_init=False)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_offset=new_offset_param, opt_params=None, is_first=False)
-
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, ):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
