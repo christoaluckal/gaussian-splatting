@@ -23,7 +23,7 @@ if args.exp:
             #     exp_str = f'python train.py -s {split2_scene}/model0 -m split2_{i} -r {i} --eval --pkl_name split2_r{i}.pkl -x 1'
             # elif j == 2:
             #     exp_str = f'python train.py -s {split3_scene}/model0 -m split3_{i} -r {i} --eval --pkl_name split3_r{i}.pkl -x 2'
-
+            print(exp_str)
             subprocess.call(exp_str,shell=True)
 
 else:

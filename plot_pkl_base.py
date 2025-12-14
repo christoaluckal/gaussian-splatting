@@ -108,6 +108,7 @@ for name, t, loss, loss_sm, l1loss, psnr, numg, idxs in datasets:
     axs[0, 0].plot(l1loss[:, 0], l1loss[:, 1], label=name, linewidth=5)
     axs[0, 0].scatter(l1loss[:, 0], l1loss[:, 1], s=80)
     axs[0,0].set_xticks(idxs.flatten())
+    axs[0,0].axvline(10000,color='black')
 axs[0, 0].legend()
 axs[0,0].grid()
 
@@ -117,6 +118,7 @@ for name, t, loss, loss_sm, l1loss, psnr, numg, idxs in datasets:
     axs[0, 1].plot(psnr[:, 0], psnr[:, 1], label=name, linewidth=5)
     axs[0, 1].scatter(psnr[:, 0], psnr[:, 1], s=80)
     axs[0,1].set_xticks(idxs.flatten())
+    axs[0,1].axvline(10000,color='black')
 axs[0, 1].legend()
 axs[0,1].grid()
 

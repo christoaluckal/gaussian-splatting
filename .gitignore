@@ -16,3 +16,5 @@ jug
 *.JPG
 cfg_args
 submodules
+input
+output
