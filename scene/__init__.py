@@ -786,13 +786,13 @@ class Scene:
         print(f"Number of gaussians after RoMa initialization: {(all_new_xyz.shape[0])}")
 
         extension_dict = {
-            "xyz": all_new_xyz,
-            "features_dc": all_new_features_dc,
-            "features_rest": torch.cat(all_new_features_rest, dim=0),
-            "opacities": torch.cat(all_new_opacities, dim=0),
-            "scaling": torch.cat(all_new_scaling, dim=0),
-            "rotation": torch.cat(all_new_rotation, dim=0),
-            "radii": new_tmp_radii,
+            "xyz": all_new_xyz.to(device),
+            "features_dc": all_new_features_dc.to(device),
+            "features_rest": torch.cat(all_new_features_rest, dim=0).to(device),
+            "opacities": torch.cat(all_new_opacities, dim=0).to(device),
+            "scaling": torch.cat(all_new_scaling, dim=0).to(device),
+            "rotation": torch.cat(all_new_rotation, dim=0).to(device),
+            "radii": new_tmp_radii.to(device),
         }
 
         return extension_dict
@@ -827,9 +827,14 @@ class Scene:
 
         g = self.x_gauss[index-1]
         x = self.init_gaussians_with_corr(g, new_train_cameras[1.0], device='cuda', verbose=False)
+        g._xyz = x['xyz']
+        g._features_dc = x['features_dc']
+        g._features_rest = x['features_rest']
+        g._opacity = x['opacities']
+        g._scaling = x['scaling']
+        g._rotation = x['rotation']
 
-
-        xset = [new_train_cameras,new_test_cameras,x]
+        xset = [new_train_cameras,new_test_cameras]
         return xset
 
     def extend(self):
@@ -840,8 +845,8 @@ class Scene:
                 self.train_cameras[k] = self.train_cameras[k] + self.extension_set[self.current_xidx-1][0][k]
             for k,v in self.test_cameras.items():
                 self.test_cameras[k] = self.test_cameras[k] + self.extension_set[self.current_xidx-1][1][k]
-            # self.gaussians.concat_new_gaussian(self.x_gauss[self.current_xidx-1])
-            self.gaussians.concat_new_gaussian(self.extension_set[self.current_xidx-1][2])
+            self.gaussians.concat_new_gaussian(self.x_gauss[self.current_xidx-1])
+            # self.gaussians.concat_new_gaussian(self.extension_set[self.current_xidx-1][2])
             self.current_xidx += 1
             print(f"Number of Gaussians after extending: {self.gaussians._xyz.shape}")
         else:
