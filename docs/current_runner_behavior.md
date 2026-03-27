@@ -108,8 +108,10 @@ Runner-specific stage length behavior:
 - `total_levels` is `len(resolution_scales)` for that experiment
 - for base variants and baseline variants, the runner uses the default `5000`
 - when an extension actually appends new viewpoints, the trainer resets the active LoD phase to the coarsest configured scale on the next iteration
-- after that reset, viewpoint sampling is restricted to the newly appended viewpoint range rather than the older accumulated range
-- example: if `split_source` is `..._split2/model0`, `final_extension_iteration = 7500`, and the LoD variant uses `resolution_scales = [2, 4, 8]`, then `splitter_itr = 7500`, `total_levels = 3`, and `naive_lod_stage_iterations = 2500`; the run trains at scales `8`, then `4`, then `2`, the extension triggers at iteration `7500`, and the next iteration restarts the new-viewpoint phase at scale `8`
+- after that reset, sampling stays uniform over all viewpoints, old and new
+- viewpoints in previously promoted blocks render at the finest configured scale
+- viewpoints in the current active block render at the current LoD phase scale
+- example: if `split_source` is `..._split2/model0`, `final_extension_iteration = 7500`, and the LoD variant uses `resolution_scales = [2, 4, 8]`, then `splitter_itr = 7500`, `total_levels = 3`, and `naive_lod_stage_iterations = 2500`; the run trains at scales `8`, then `4`, then `2`, the extension triggers at iteration `7500`, and from iteration `7501` onward the old block samples render at scale `2` while the new active block restarts at scale `8`
 
 ## Actual experiment matrix
 
@@ -151,7 +153,7 @@ because the runner does not currently define a `matched-baseline` variant.
 
 - deterministic fixed-iteration LoD scheduling through `--resolution_scales` and `--naive_lod_stage_iterations`
 - split-specific LoD phase resets after extensions that add a new viewpoint block
-- split-specific viewpoint sampling that switches to the newest viewpoint block after such an extension
+- split-specific uniform viewpoint sampling across all accumulated blocks, with render scale chosen per sampled viewpoint
 - finest-scale evaluation through the shared reporting path
 - default test evaluation every `1000` iterations, plus the final iteration
 - runtime logging for scene-load GPU memory and scene-load time, per-iteration GPU memory in `runtime_metrics.csv`, one training-loop GPU-memory point for dashboards, and total training time

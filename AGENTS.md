@@ -126,10 +126,11 @@ Default evaluation cadence:
 ## Important implementation detail
 
 - Camera sampling is index-based across all configured scales.
-- One sampled viewpoint index is reused across scales, so the same scene/view is seen at the active LoD level.
+- Sampling is uniform over the full accumulated viewpoint set, including both previous and newly added blocks.
 - When `scene.extend()` adds new Gaussians and cameras, the multi-scale viewpoint stacks are rebuilt.
 - After a real extension adds new viewpoints, split training resets the LoD phase to the coarsest configured scale for the next iteration.
-- After that reset, the sampler is restricted to the newly appended viewpoint index range rather than the full accumulated training set.
+- Viewpoints from previously promoted blocks render at the finest configured scale when sampled.
+- Viewpoints from the current active block render at the current LoD phase scale.
 
 ## Files and functions to check before editing
 

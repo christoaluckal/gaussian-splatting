@@ -240,7 +240,7 @@ def training(
 
     viewpoint_dict, viewpoint_indices = _build_viewpoint_stacks(scene, resolution_scales)
     active_viewpoint_start_idx = 0
-    active_viewpoint_count = len(viewpoint_dict[finest_scale])
+    total_viewpoint_count = len(viewpoint_dict[finest_scale])
     initial_scale_idx, initial_scale = _resolve_naive_lod_scale(
         max(first_iter, 1),
         lod_scales,
@@ -347,10 +347,7 @@ def training(
                 gaussians.oneupSHdegree()
 
             if not viewpoint_indices:
-                viewpoint_indices = _refill_viewpoint_indices(
-                    active_viewpoint_count,
-                    start_idx=active_viewpoint_start_idx,
-                )
+                viewpoint_indices = _refill_viewpoint_indices(total_viewpoint_count)
 
             viewpoint_idx = viewpoint_indices.pop(randint(0, len(viewpoint_indices) - 1))
             current_scale = _maybe_update_naive_lod_scale(
@@ -358,7 +355,8 @@ def training(
                 lod_state,
                 naive_lod_stage_iterations,
             )
-            viewpoint_cam = viewpoint_dict[current_scale][viewpoint_idx]
+            render_scale = finest_scale if viewpoint_idx < active_viewpoint_start_idx else current_scale
+            viewpoint_cam = viewpoint_dict[render_scale][viewpoint_idx]
 
             if (iteration - 1) == debug_from:
                 pipe.debug = True
@@ -415,7 +413,7 @@ def training(
                         {
                             'Loss': f'{ema_loss_for_log:.7f}',
                             'Depth': f'{ema_Ll1depth_for_log:.7f}',
-                            'LoD': current_scale,
+                            'LoD': render_scale,
                             'NG': f'{gaussians.get_xyz.shape[0]}',
                         }
                     )
@@ -432,7 +430,7 @@ def training(
                         'photometric_loss': Ll1.item(),
                         'total_loss': loss.item(),
                         'depth_loss': Ll1depth,
-                        'lod_scale': current_scale,
+                        'lod_scale': render_scale,
                         'lod_stage_idx': lod_state['current_scale_idx'],
                         'num_gaussians': gaussians.get_xyz.shape[0],
                         'iter_time_ms': iter_time_ms,
@@ -481,7 +479,7 @@ def training(
                             'train/photometric_loss': Ll1.item(),
                             'train/total_loss': loss.item(),
                             'train/depth_loss': Ll1depth,
-                            'train/lod_scale': current_scale,
+                            'train/lod_scale': render_scale,
                             'train/lod_stage_idx': lod_state['current_scale_idx'],
                             'train/num_gaussians': gaussians.get_xyz.shape[0],
                         },
@@ -501,7 +499,7 @@ def training(
                     (pipe, background, 1.0, SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp),
                     dataset.train_test_exp,
                     finest_scale,
-                    current_scale,
+                    render_scale,
                     eval_metrics_csv,
                     eval_csv_fields,
                     fixed_wandb_eval_view,
@@ -539,7 +537,6 @@ def training(
                     print('Adding new gaussians')
                     previous_num_viewpoints = len(viewpoint_dict[finest_scale])
                     previous_active_viewpoint_start_idx = active_viewpoint_start_idx
-                    previous_active_viewpoint_count = active_viewpoint_count
                     scene.extend()
                     viewpoint_dict, _ = _build_viewpoint_stacks(scene, resolution_scales)
                     new_total_viewpoints = len(viewpoint_dict[finest_scale])
@@ -550,22 +547,19 @@ def training(
                     )
                     if new_viewpoint_count > 0:
                         active_viewpoint_start_idx = new_viewpoint_start_idx
-                        active_viewpoint_count = new_viewpoint_count
-                        viewpoint_indices = _refill_viewpoint_indices(
-                            active_viewpoint_count,
-                            start_idx=active_viewpoint_start_idx,
-                        )
+                        total_viewpoint_count = new_total_viewpoints
+                        viewpoint_indices = _refill_viewpoint_indices(total_viewpoint_count)
                         _reset_naive_lod_phase(iteration + 1, lod_state)
                         print(
-                            'Sampling only new viewpoint indices:',
+                            'Sampling uniformly across all viewpoint indices with new active block:',
                             active_viewpoint_start_idx,
                             'to',
                             new_total_viewpoints - 1,
                         )
-                        print('New Viewpoint Count:', active_viewpoint_count)
+                        print('New Viewpoint Count:', new_viewpoint_count)
                     else:
                         active_viewpoint_start_idx = previous_active_viewpoint_start_idx
-                        active_viewpoint_count = previous_active_viewpoint_count
+                        total_viewpoint_count = previous_num_viewpoints
                         print('No new viewpoints were added by this extension step.')
 
                 if iteration < opt.iterations:
