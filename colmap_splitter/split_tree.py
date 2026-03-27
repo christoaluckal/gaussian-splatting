@@ -1,305 +1,103 @@
-import numpy as np
-import os
-import pprint
-import shutil
 import argparse
-import random
-from scipy.spatial.transform import Rotation as R
+import os
+
+import numpy as np
 from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation as R
 
-class Splitter:
-    def __init__(self,
-                 scene_path:str=None,
-                 new_scene_path: str = None,
-                 is_default: bool = None
-                 ):
-        self.scene_base = scene_path
+from common import ColmapSplitterBase
+
+
+class Splitter(ColmapSplitterBase):
+    def __init__(self, scene_path: str = None, new_scene_path: str = None, is_default: bool = False):
+        super().__init__(scene_path=scene_path, new_scene_path=new_scene_path)
         self.is_default = is_default
-        # sparse_0 = os.path.join('sparse','0')
-        sparse_0 = 'sparse_txt'
-        self.cameras = os.path.join(self.scene_base, sparse_0, 'cameras.txt')
-        self.images = os.path.join(self.scene_base, sparse_0, 'images.txt')
-        self.points3D = os.path.join(self.scene_base, sparse_0, 'points3D.txt')
-        self.new_scene_path = os.path.join(new_scene_path)
 
-        self.id_dict = {}
-        self.p3_dict = {}
+    def _camera_centers(self, images):
+        xyz = []
+        for image in images:
+            qw, qx, qy, qz = image["quat"]
+            tx, ty, tz = image["tvec"]
+            rotation = R.from_quat([qx, qy, qz, qw]).as_matrix()
+            t_vec = np.array([tx, ty, tz], dtype=float)
+            xyz.append(-rotation.T @ t_vec)
+        return np.array(xyz)
 
-        self.img_HEADER = (
-        "# Image list with two lines of data per image:\n"
-        + "#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n"
-        + "#   POINTS2D[] as (X, Y, POINT3D_ID)\n"
-        + "# Number of images: {}, mean observations per image: {}\n".format(
-            0, 0
-        )
-        )
+    def _build_clusters(self, images, dist):
+        if self.is_default or len(images) <= 1:
+            return [list(range(len(images)))]
 
-        self.points_HEADER = (
-        "# 3D point list with one line of data per point:\n"
-        + "#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n"
-        + "# Number of points: {}, mean track length: {}\n".format(
-            0, 0
-        )
-        )
+        xyz = self._camera_centers(images)
+        tree = cKDTree(xyz)
+        neighbors = tree.query_ball_tree(tree, r=dist)
 
-        self.tree = None
-
-    def copy_and_remove(self, keys, dir):
-        shutil.copytree(os.path.join(self.scene_base, 'images'),dir)
-        for root, _, files in os.walk(dir):
-            for f in files:
-                rel_path = os.path.relpath(os.path.join(root, f), dir)
-                if rel_path not in keys:
-                    os.remove(os.path.join(root, f))
-
-    def write_model(self, name, img_dict, point_dict, num_test=0):
-        m1_im = os.path.join(self.new_scene_path, name, 'sparse','0','images.txt')
-        m1_test = os.path.join(self.new_scene_path, name, 'sparse','0','test.txt')
-        m1_pt = os.path.join(self.new_scene_path, name, 'sparse','0','points3D.txt')
-
-        if num_test > 0:
-            keys = random.sample(list(img_dict.keys()),num_test)
-            with open(m1_test,'a') as f:
-                f.write(self.img_HEADER)
-                for ke,v in img_dict.items():
-                    if ke in keys:
-                        s = " ".join(str(x) for x in v[0])
-                        f.write(s)
-                        f.write('\n')
-                        arr_data = v[1]
-                        arr_data[:, 2] = arr_data[:, 2].astype(int)
-                        for x, y, z in arr_data:
-                            f.write(f"{x:.6f} {y:.6f} {int(z)} ")
-                        f.write('\n')
-
-            with open(m1_im,'a') as f:
-                f.write(self.img_HEADER)
-                for ke,v in img_dict.items():
-                    if ke not in keys:
-                        s = " ".join(str(x) for x in v[0])
-                        f.write(s)
-                        f.write('\n')
-                        arr_data = v[1]
-                        arr_data[:, 2] = arr_data[:, 2].astype(int)
-                        for x, y, z in arr_data:
-                            f.write(f"{x:.6f} {y:.6f} {int(z)} ")
-                        f.write('\n')
-        else:
-            with open(m1_im,'a') as f:
-                f.write(self.img_HEADER)
-                for ke,v in img_dict.items():
-                    s = " ".join(str(x) for x in v[0])
-                    f.write(s)
-                    f.write('\n')
-                    arr_data = v[1]
-                    arr_data[:, 2] = arr_data[:, 2].astype(int)
-                    for x, y, z in arr_data:
-                        f.write(f"{x:.6f} {y:.6f} {int(z)} ")
-                    f.write('\n')
-
-        with open(m1_pt,'a') as f:
-            f.write(self.points_HEADER)
-            for k,v in point_dict.items():
-                f.write(f'{k} ')
-                f.write(" ".join(str(x) for x in v))
-                f.write('\n')
-
-        shutil.copy2(self.cameras, os.path.join(self.new_scene_path, name, 'sparse','0','cameras.txt'))
-        valid_files = set(img_dict.keys())
-        base_images = os.path.join(self.new_scene_path, name, 'images')
-        res2 = os.path.join(self.new_scene_path, name, 'images_2')
-        res4 = os.path.join(self.new_scene_path, name, 'images_4')
-        res8 = os.path.join(self.new_scene_path, name, 'images_8')
-        self.copy_and_remove(valid_files,base_images)
-        self.copy_and_remove(valid_files,res2)
-        self.copy_and_remove(valid_files,res4)
-        self.copy_and_remove(valid_files,res8)
-
-    def build_composite_idlist(self,large_dict, skip_idx):
-        idlist = []
-        for i,kv in enumerate(large_dict.items()):
-            k = kv[0]
-            v = kv[1]
-            if i==skip_idx:
+        indexed = np.zeros(len(neighbors), dtype=bool)
+        anchor_groups = {}
+        for idx, entries in enumerate(neighbors):
+            if indexed[idx]:
                 continue
-            else:
-                idlist += list(v.keys())
 
-        return idlist
+            cluster = []
+            for neighbor_idx in entries:
+                if neighbor_idx == idx or indexed[neighbor_idx]:
+                    continue
+                cluster.append(neighbor_idx)
+                indexed[neighbor_idx] = True
 
-    def build_model(self,dist=0.5):
-        i = 0
-        xyz = []
-        image_names = []
-        xyz = []
-        with open(self.images, 'r') as f:
-            image_data = f.readlines()[4:]  # skip header
-            i = 0
-            while i < len(image_data):
-                iv_row_data = image_data[i].split()
-                qw, qx, qy, qz = map(float, iv_row_data[1:5])
-                image_names.append(iv_row_data[9])
-                tx, ty, tz = map(float, iv_row_data[5:8])
-                R_mat = R.from_quat([qx, qy, qz, qw]).as_matrix()
-                t_vec = np.array([tx, ty, tz])
-                C = -R_mat.T @ t_vec
-                xyz.append(C)
-                i += 2  
+            if cluster:
+                anchor_groups[idx] = cluster
 
-        xyz = np.array(xyz)
-        self.tree = cKDTree(xyz)
-        self.qtree = cKDTree(xyz)
+        groups = []
+        if anchor_groups:
+            groups.append(sorted(anchor_groups.keys()))
+            for cluster in anchor_groups.values():
+                groups.append(sorted(cluster))
+        else:
+            groups.append(list(range(len(images))))
 
-        indexes = self.tree.query_ball_tree(self.qtree, r=dist)
-        indexed = np.zeros((len(indexes)))
-        base_ids = {}
-        for i in range(len(indexes)):
-            if indexed[i] == 0:
-                f = []
-                for j in indexes[i]:
-                    if i == j:
-                        continue
-                    if indexed[j] == 0:
-                        f.append(j)
-                        indexed[j] = 1
-                if len(f) > 0:
-                    base_ids[i] = f
-                
+        return groups
 
-                # input()
-                
-        pprint.pprint(base_ids)
-        print(len(base_ids.keys()))
-            
-        ans = input('Continue?')
-        if ans == 'n':
-            exit(1)
+    def build_model(self, dist=0.5, num_test=0):
+        images = self._read_images()
+        all_points = self._read_points3D()
 
-        model_image_p2d = {}
-        i = 0
-        model_image_p2d[f'm{i}_image_p2d'] = {}
-        self.id_dict[f'm{i}'] = {}
-        self.p3_dict[f'm{i}'] = {}
+        if not images:
+            raise ValueError("No images found in sparse_txt/images.txt")
 
+        groups = self._build_clusters(images, dist)
+        image_groups = {}
+        for group_idx, image_indices in enumerate(groups):
+            for image_idx in image_indices:
+                image_groups[images[image_idx]["name"]] = group_idx
 
-        with open(self.images, 'r') as f:
-            image_row = 0
-            key_list = base_ids.keys()
-            while image_row < len(image_data):
-                iv_row = image_row
-                iv_row_idx = iv_row//2
-                if iv_row_idx in key_list:
-                    p2d_row = image_row+1
+        num_groups = len(groups)
+        group_images, group_image_ids = self._build_group_images(image_groups, num_groups)
+        group_points = self._assign_unique_points(group_images, all_points, num_groups)
+        group_images, group_points = self._prune_to_group_consistency(
+            group_images, group_points, group_image_ids
+        )
 
-                    iv_row_data = image_data[iv_row].split()
-                    image_name = iv_row_data[-1]
-
-                    p2d_data = np.array(image_data[p2d_row].split(), dtype=float).reshape(-1, 3)
-
-                    p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
-                    self.id_dict[f'm0'].update({str(id_): True for id_ in p2d_ids})
-            
-                    filter_ids = self.build_composite_idlist(self.id_dict, 0)
-                    curr_ids = p2d_data[:, 2].astype(int).astype(str)
-                    mask = ~np.isin(curr_ids, filter_ids)
-                    filtered_arr = p2d_data[mask]
-
-                    model_image_p2d[f'm0_image_p2d'][image_name] = [iv_row_data, filtered_arr]
-                image_row += 2
-
-        
-
-        with open(self.points3D, 'r') as f:
-            points_data = f.readlines()[3:]
-            i = 0
-            while i < len(points_data):
-                point_row = points_data[i]
-                point_idx = point_row.split()[0]
-
-                for idx, kv in enumerate(self.id_dict.items()):
-                    k = kv[0]
-                    v = kv[1]
-                    if str(point_idx) in self.id_dict[k]:
-                        self.p3_dict[f'm{idx}'][point_idx] = point_row.split()[1:]
-                        break
-
-                i+=1
-
-        os.makedirs(os.path.join(self.new_scene_path, f'model0', 'sparse','0'),exist_ok=True)
-        self.write_model(f'model0', model_image_p2d[f'm0_image_p2d'], self.p3_dict[f'm0'])
-
-        del model_image_p2d
-        del self.id_dict
-        del self.p3_dict
-
-        model_image_p2d = {}
-        self.id_dict = {}
-        self.p3_dict = {}
-        for i in range(1,len(base_ids.keys())+1):
-            model_image_p2d[f'm{i}_image_p2d'] = {}
-            self.id_dict[f'm{i}'] = {}
-            self.p3_dict[f'm{i}'] = {}
-
-        with open(self.images, 'r') as f:
-            model_start = 1
-            key_list = base_ids.keys()
-            for kidx, k in enumerate(key_list):
-                print(k)
-                kidx = kidx + model_start
-                new_rows = base_ids[k]
-                for r in new_rows:
-                    iv_row = r*2
-                    p2d_row = r*2+1
-                    iv_row_data = image_data[iv_row].split()
-                    image_name = iv_row_data[-1]
-                    p2d_data = np.array(image_data[p2d_row].split(), dtype=float).reshape(-1, 3)
-
-                    p2d_ids = np.unique(p2d_data[:, 2].astype(int).astype(str))
-                    self.id_dict[f'm{kidx}'].update({str(id_): True for id_ in p2d_ids})
-            
-                    filter_ids = self.build_composite_idlist(self.id_dict, kidx-1)
-                    curr_ids = p2d_data[:, 2].astype(int).astype(str)
-                    mask = ~np.isin(curr_ids, filter_ids)
-                    filtered_arr = p2d_data[mask]
-
-                    model_image_p2d[f'm{kidx}_image_p2d'][image_name] = [iv_row_data, filtered_arr]
-
-        with open(self.points3D, 'r') as f:
-            points_data = f.readlines()[3:]
-            i = 0
-            while i < len(points_data):
-                point_row = points_data[i]
-                point_idx = point_row.split()[0]
-
-                for idx, kv in enumerate(self.id_dict.items()):
-                    idx = idx+1
-                    k = kv[0]
-                    v = kv[1]
-                    if str(point_idx) in self.id_dict[k]:
-                        self.p3_dict[f'm{idx}'][point_idx] = point_row.split()[1:]
-                        break
-
-                i+=1
-
-
-        num_dirs = len(model_image_p2d.keys())
-        for i in range(1, num_dirs+1):    
-            os.makedirs(os.path.join(self.new_scene_path, f'model{i}', 'sparse','0'),exist_ok=True)
-            self.write_model(f'model{i}', model_image_p2d[f'm{i}_image_p2d'], self.p3_dict[f'm{i}'],0)
-            
+        for group_idx in range(num_groups):
+            self.write_model(
+                f"model{group_idx}",
+                group_images[group_idx],
+                group_points[group_idx],
+                num_test=num_test,
+            )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s',type=str,required=True,help='source scene path')
-    parser.add_argument('-m',type=str,required=True,help='destination scene path')
-    parser.add_argument('--default',action='store_true')
-    parser.add_argument('--dist',type=float,default=0.1)
+    parser.add_argument("-s", "--source", type=str, required=True, help="source scene path")
+    parser.add_argument("-m", "--output", type=str, required=True, help="destination root path")
+    parser.add_argument("--dist", type=float, default=0.1, help="camera-center neighborhood radius")
+    parser.add_argument("--default", action="store_true", help="emit only model0")
+    parser.add_argument("--num-test", type=int, default=0, help="number of held-out test images per model")
     args = parser.parse_args()
-    src_scene = os.path.abspath(args.s)
-    dst_scene = os.path.abspath(args.m)
-    s = Splitter(scene_path=src_scene,
-                 new_scene_path=dst_scene,
-                 is_default=args.default
-                 )
-    s.build_model(dist=args.dist)
+
+    splitter = Splitter(
+        scene_path=os.path.abspath(args.source),
+        new_scene_path=os.path.abspath(args.output),
+        is_default=args.default,
+    )
+    splitter.build_model(dist=args.dist, num_test=args.num_test)

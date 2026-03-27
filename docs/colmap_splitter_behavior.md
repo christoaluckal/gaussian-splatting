@@ -40,7 +40,7 @@ Current shared behavior:
 
 - each output model is written under `<dst>/modelN/sparse/0`
 - `images.txt`, `points3D.txt`, and `cameras.txt` are written for each model
-- `test.txt` is written only when `--num_test > 0`
+- `test.txt` is written only when `--num-test > 0`
 - image files are copied into each model-specific `images` directory and filtered to only the selected image names
 - `images_2`, `images_4`, and `images_8` are filtered and copied too when they exist in the source scene
 
@@ -63,12 +63,12 @@ This means the generated `images.txt` and `points3D.txt` stay mutually consisten
 
 Arguments:
 
-- `-s`: source scene
-- `-m`: destination root
-- `-m1`: first output model name, default `model0`
-- `-m2`: second output model name, default `model1`
-- `-f`: split frame image name
-- `--num_test`: number of held-out test images per output model
+- `-s`, `--source`: source scene
+- `-m`, `--output`: destination root
+- `--first-name`: first output model name, default `model0`
+- `--second-name`: second output model name, default `model1`
+- `-f`, `--split-frame`: split frame image name
+- `--num-test`: number of held-out test images per output model
 
 Current behavior:
 
@@ -81,12 +81,12 @@ Example:
 
 ```bash
 python colmap_splitter/split.py \
-  -s /path/to/scene \
-  -m /path/to/scene_split \
-  -m1 model0 \
-  -m2 model1 \
-  -f frame_00042.png \
-  --num_test 10
+  --source /path/to/scene \
+  --output /path/to/scene_split \
+  --first-name model0 \
+  --second-name model1 \
+  --split-frame frame_00042.png \
+  --num-test 10
 ```
 
 ### `split_list.py`
@@ -95,11 +95,11 @@ python colmap_splitter/split.py \
 
 Arguments:
 
-- `-s`: source scene
-- `-m`: destination root
-- `--split_num`: number of output models
-- `--default`: force a single output model regardless of `--split_num`
-- `--num_test`: number of held-out test images per output model
+- `-s`, `--source`: source scene
+- `-m`, `--output`: destination root
+- `--split-num`: number of output models
+- `--default`: force a single output model regardless of `--split-num`
+- `--num-test`: number of held-out test images per output model
 
 Current behavior:
 
@@ -113,10 +113,10 @@ Example:
 
 ```bash
 python colmap_splitter/split_list.py \
-  -s /path/to/scene \
-  -m /path/to/scene_split3 \
-  --split_num 3 \
-  --num_test 5
+  --source /path/to/scene \
+  --output /path/to/scene_split3 \
+  --split-num 3 \
+  --num-test 5
 ```
 
 ### `split_tree.py`
@@ -125,10 +125,11 @@ python colmap_splitter/split_list.py \
 
 Arguments:
 
-- `-s`: source scene
-- `-m`: destination root
+- `-s`, `--source`: source scene
+- `-m`, `--output`: destination root
 - `--dist`: camera-center neighborhood radius
 - `--default`: force a single output model
+- `--num-test`: number of held-out test images per output model
 
 Current behavior:
 
@@ -147,9 +148,10 @@ Example:
 
 ```bash
 python colmap_splitter/split_tree.py \
-  -s /path/to/scene \
-  -m /path/to/scene_tree \
-  --dist 0.1
+  --source /path/to/scene \
+  --output /path/to/scene_tree \
+  --dist 0.1 \
+  --num-test 5
 ```
 
 ### `split_xyz.py`
@@ -158,10 +160,10 @@ python colmap_splitter/split_tree.py \
 
 Arguments:
 
-- `-s`: source scene
-- `-m`: destination root
-- `--split_num`: number of radial wedges
-- `--num_test`: number of held-out test images per output model
+- `-s`, `--source`: source scene
+- `-m`, `--output`: destination root
+- `--split-num`: number of radial wedges
+- `--num-test`: number of held-out test images per output model
 
 Current behavior:
 
@@ -175,10 +177,10 @@ Example:
 
 ```bash
 python colmap_splitter/split_xyz.py \
-  -s /path/to/scene \
-  -m /path/to/scene_xyz4 \
-  --split_num 4 \
-  --num_test 5
+  --source /path/to/scene \
+  --output /path/to/scene_xyz4 \
+  --split-num 4 \
+  --num-test 5
 ```
 
 ## Relationship to the runner
