@@ -17,13 +17,24 @@ from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from edgs_init import apply_edgs_initialization
 import copy
 from pathlib import Path
 class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(
+        self,
+        args : ModelParams,
+        gaussians : GaussianModel,
+        load_iteration=None,
+        shuffle=True,
+        resolution_scales=[1.0],
+        edgs_init_cfg=None,
+        training_args=None,
+        device="cuda",
+    ):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -33,6 +44,9 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.xtend = args.xtend
+        self.edgs_init_cfg = edgs_init_cfg
+        self.training_args = training_args
+        self.device = device
 
         print(f"Creating additional {self.xtend} gaussians")
         self.x_gauss = [copy.deepcopy(self.gaussians) for _ in range(self.xtend)]
@@ -88,6 +102,14 @@ class Scene:
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
+            if self._should_apply_edgs_init_to_base():
+                self.gaussians.training_setup(self.training_args)
+                apply_edgs_initialization(
+                    self.gaussians,
+                    self.train_cameras[reference_resolution_scale],
+                    self.edgs_init_cfg,
+                    device=self.device,
+                )
 
         self.extension_set = []
         
@@ -96,6 +118,21 @@ class Scene:
 
 
         self.current_xidx = 1
+
+    def _should_apply_edgs_init_to_base(self):
+        return (
+            self.training_args is not None
+            and self.edgs_init_cfg is not None
+            and self.edgs_init_cfg.use
+        )
+
+    def _should_apply_edgs_init_to_extensions(self):
+        return (
+            self.training_args is not None
+            and self.edgs_init_cfg is not None
+            and self.edgs_init_cfg.use
+            and self.edgs_init_cfg.init_extensions
+        )
 
     def create_2nd_set(self,index,res_scales, args):
         new_train_cameras = {}
@@ -120,8 +157,15 @@ class Scene:
             print("Loading Test Cameras")
             new_test_cameras[resolution_scale] = cameraList_from_camInfos(new_scene_info.test_cameras, resolution_scale, args, new_scene_info.is_nerf_synthetic, True)
 
-
         self.x_gauss[index-1].create_from_pcd(new_scene_info.point_cloud, new_scene_info.train_cameras, new_cameras_extent)
+        if self._should_apply_edgs_init_to_extensions():
+            self.x_gauss[index-1].training_setup(self.training_args)
+            apply_edgs_initialization(
+                self.x_gauss[index-1],
+                new_train_cameras[reference_resolution_scale],
+                self.edgs_init_cfg,
+                device=self.device,
+            )
 
         xset = [new_train_cameras,new_test_cameras]
         return xset

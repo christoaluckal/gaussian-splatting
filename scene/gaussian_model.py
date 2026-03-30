@@ -60,6 +60,7 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        self.tmp_radii = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -401,10 +402,16 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
+        new_tmp_radii = new_tmp_radii.to(self._xyz.device)
         try:
             self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
         except:
-            self.tmp_radii = torch.cat((torch.zeros((self.get_xyz.shape[0])),new_tmp_radii))
+            self.tmp_radii = torch.cat(
+                (
+                    torch.zeros((self.get_xyz.shape[0]), device=self._xyz.device),
+                    new_tmp_radii,
+                )
+            )
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
