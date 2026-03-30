@@ -17,7 +17,43 @@ import cv2
 
 WARNED = False
 
-def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
+
+def _compute_resolution(args, orig_w, orig_h, resolution_scale):
+    if args.resolution in [1, 2, 4, 8]:
+        return (
+            round(orig_w / (resolution_scale * args.resolution)),
+            round(orig_h / (resolution_scale * args.resolution)),
+        )
+
+    if args.resolution == -1:
+        if orig_w > 1600:
+            global WARNED
+            if not WARNED:
+                print(
+                    "[ INFO ] Encountered quite large input images (>1.6K pixels width), "
+                    "rescaling to 1.6K.\n If this is not desired, please explicitly "
+                    "specify '--resolution/-r' as 1"
+                )
+                WARNED = True
+            global_down = orig_w / 1600
+        else:
+            global_down = 1
+    else:
+        global_down = orig_w / args.resolution
+
+    scale = float(global_down) * float(resolution_scale)
+    return (int(orig_w / scale), int(orig_h / scale))
+
+
+def loadCam(
+    args,
+    id,
+    cam_info,
+    resolution_scale,
+    is_nerf_synthetic,
+    is_test_dataset,
+    reference_resolution_scale=None,
+):
     image = Image.open(cam_info.image_path)
 
     if cam_info.depth_path != "":
@@ -38,39 +74,60 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
             raise
     else:
         invdepthmap = None
-        
+
     orig_w, orig_h = image.size
-    if args.resolution in [1, 2, 4, 8]:
-        resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
-    else:  # should be a type that converts to float
-        if args.resolution == -1:
-            if orig_w > 1600:
-                global WARNED
-                if not WARNED:
-                    print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
-                        "If this is not desired, please explicitly specify '--resolution/-r' as 1")
-                    WARNED = True
-                global_down = orig_w / 1600
-            else:
-                global_down = 1
-        else:
-            global_down = orig_w / args.resolution
-    
+    resolution = _compute_resolution(args, orig_w, orig_h, resolution_scale)
 
-        scale = float(global_down) * float(resolution_scale)
-        resolution = (int(orig_w / scale), int(orig_h / scale))
+    if getattr(args, "match_resolution", False) and reference_resolution_scale is not None:
+        target_resolution = _compute_resolution(args, orig_w, orig_h, reference_resolution_scale)
+        if resolution != target_resolution:
+            image = image.resize(resolution, Image.BILINEAR).resize(target_resolution, Image.BILINEAR)
+            if invdepthmap is not None:
+                invdepthmap = cv2.resize(invdepthmap, resolution, interpolation=cv2.INTER_LINEAR)
+                invdepthmap = cv2.resize(invdepthmap, target_resolution, interpolation=cv2.INTER_LINEAR)
+            resolution = target_resolution
 
-    return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, depth_params=cam_info.depth_params,
-                  image=image, invdepthmap=invdepthmap,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device,
-                  train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test)
+    return Camera(
+        resolution,
+        colmap_id=cam_info.uid,
+        R=cam_info.R,
+        T=cam_info.T,
+        FoVx=cam_info.FovX,
+        FoVy=cam_info.FovY,
+        depth_params=cam_info.depth_params,
+        image=image,
+        invdepthmap=invdepthmap,
+        image_name=cam_info.image_name,
+        uid=id,
+        data_device=args.data_device,
+        train_test_exp=args.train_test_exp,
+        is_test_dataset=is_test_dataset,
+        is_test_view=cam_info.is_test,
+    )
 
-def cameraList_from_camInfos(cam_infos, resolution_scale, args, is_nerf_synthetic, is_test_dataset):
+
+def cameraList_from_camInfos(
+    cam_infos,
+    resolution_scale,
+    args,
+    is_nerf_synthetic,
+    is_test_dataset,
+    reference_resolution_scale=None,
+):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
-        camera_list.append(loadCam(args, id, c, resolution_scale, is_nerf_synthetic, is_test_dataset))
+        camera_list.append(
+            loadCam(
+                args,
+                id,
+                c,
+                resolution_scale,
+                is_nerf_synthetic,
+                is_test_dataset,
+                reference_resolution_scale,
+            )
+        )
 
     return camera_list
 

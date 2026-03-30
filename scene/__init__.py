@@ -89,11 +89,26 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
+        reference_resolution_scale = resolution_scales[0]
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
+            self.train_cameras[resolution_scale] = cameraList_from_camInfos(
+                scene_info.train_cameras,
+                resolution_scale,
+                args,
+                scene_info.is_nerf_synthetic,
+                False,
+                reference_resolution_scale,
+            )
             print("Loading Test Cameras")
-            self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
+            self.test_cameras[resolution_scale] = cameraList_from_camInfos(
+                scene_info.test_cameras,
+                resolution_scale,
+                args,
+                scene_info.is_nerf_synthetic,
+                True,
+                reference_resolution_scale,
+            )
 
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
@@ -151,11 +166,26 @@ class Scene:
         random.shuffle(new_scene_info.train_cameras) 
         new_cameras_extent = new_scene_info.nerf_normalization["radius"]
 
+        reference_resolution_scale = res_scales[0]
         for resolution_scale in res_scales:
             print("Loading Training Cameras")
-            new_train_cameras[resolution_scale] = cameraList_from_camInfos(new_scene_info.train_cameras, resolution_scale, args, new_scene_info.is_nerf_synthetic, False)
+            new_train_cameras[resolution_scale] = cameraList_from_camInfos(
+                new_scene_info.train_cameras,
+                resolution_scale,
+                args,
+                new_scene_info.is_nerf_synthetic,
+                False,
+                reference_resolution_scale,
+            )
             print("Loading Test Cameras")
-            new_test_cameras[resolution_scale] = cameraList_from_camInfos(new_scene_info.test_cameras, resolution_scale, args, new_scene_info.is_nerf_synthetic, True)
+            new_test_cameras[resolution_scale] = cameraList_from_camInfos(
+                new_scene_info.test_cameras,
+                resolution_scale,
+                args,
+                new_scene_info.is_nerf_synthetic,
+                True,
+                reference_resolution_scale,
+            )
 
         self.x_gauss[index-1].create_from_pcd(new_scene_info.point_cloud, new_scene_info.train_cameras, new_cameras_extent)
         if self._should_apply_edgs_init_to_extensions():

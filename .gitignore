@@ -16,3 +16,4 @@ jug
 *.JPG
 cfg_args
 submodules
+wandb
