@@ -6,6 +6,7 @@ Current documents:
 
 - `current_runner_behavior.md`: describes the copied `gaussian-splatting` runner and LoD behavior as it exists now.
 - `colmap_splitter_behavior.md`: describes the current split-scene generation contract consumed by the runner.
+- `handoff.md`: operational handoff covering validated behavior, machine requirements, and known portability limits.
 - `initialization_behavior.md`: describes the active initialization behavior in `frankenstein_base`, including the direct EDGS / RoMa bridge and split-block handling.
 - `edgs_pipeline_notes.md`: summarizes how EDGS launches experiments and performs RoMa-based Gaussian initialization.
 - `roma_integration_plan.md`: initial integration plan for bringing EDGS-style RoMa initialization into `frankenstein_base`.

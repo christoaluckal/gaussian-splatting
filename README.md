@@ -21,6 +21,12 @@ Current additions on top of the upstream baseline:
 - `edgs_init.py` imports the EDGS correspondence initializer and applies it locally
 - split extension blocks can also use EDGS initialization
 
+Important current limitation:
+
+- `--edgs_init` is not fully self-contained inside `frankenstein_base`
+- the active bridge still imports from sibling `../EDGS/source/*` and `../EDGS/submodules/RoMa`
+- cloning `frankenstein_base` by itself is therefore not enough for EDGS mode
+
 The main EDGS-facing functionality is:
 
 - initialize from COLMAP / SfM point clouds as usual
@@ -102,4 +108,5 @@ More detailed notes live in:
 - [docs/initialization_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/initialization_behavior.md)
 - [docs/current_runner_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/current_runner_behavior.md)
 - [docs/colmap_splitter_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/colmap_splitter_behavior.md)
+- [docs/handoff.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/handoff.md)
 - [docs/edgs_pipeline_notes.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/edgs_pipeline_notes.md)
