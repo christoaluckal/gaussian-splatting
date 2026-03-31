@@ -18,6 +18,7 @@ It captures:
 - base-scene and split-scene training
 - naive LoD training via `train_nomask.py`
 - experiment launching via `run_exp.py`
+- 12-run comparison launches covering vanilla and EDGS branches
 - optional EDGS / RoMa initialization through explicit `edgs_*` flags
 - explicit `--densify` / `--no-densify`
 
@@ -75,6 +76,26 @@ This was chosen because:
 
 - W&B is useful for experiment tracking
 - the viewer caused port conflicts in runner-launched jobs
+
+The runner also now supports:
+
+- one shared W&B project across the full comparison matrix
+- one shared W&B group across the full comparison matrix
+- per-run W&B names derived from the experiment naming policy
+
+### Runtime logging
+
+Current runtime logging records:
+
+- general scene/setup timing
+- per-iteration GPU memory snapshots
+- final total training time
+- EDGS base-block initialization timing
+- EDGS split-extension initialization timing
+
+The EDGS-specific runtime metrics are emitted through the same `runtime/*` logging surface used for the existing initialization and scene-load metrics.
+
+For exact key names and CSV fields, see `docs/logging_behavior.md`.
 
 ## What was validated
 
@@ -149,6 +170,31 @@ File:
 Fix:
 
 - `resolution_scales` is now the single source of truth for LoD scale
+
+### EDGS comparison training alignment
+
+Files:
+
+- `train_nomask.py`
+- `run_exp.py`
+
+Fix:
+
+- EDGS comparison jobs now use an EDGS-compatibility training recipe
+- this is applied per job inside the comparison matrix instead of as a single global runner switch
+
+### EDGS runtime initialization logging
+
+Files:
+
+- `scene/__init__.py`
+- `train_nomask.py`
+
+Fix:
+
+- base-block EDGS init timing is measured and logged
+- split-extension EDGS init timing is measured and logged
+- EDGS init GPU memory usage is logged alongside the existing runtime metrics
 
 ## Current non-self-contained dependencies
 
@@ -242,6 +288,7 @@ conda run -n frankenstein python run_exp.py \
   --base_source ../home_base/model0 \
   --split_source ../home_split2/model0 \
   --final_extension_iteration 7500 \
-  --edgs_init \
-  --no-densify
+  --iterations 30000 \
+  --run_group full-comparison \
+  --wandb_project edgs-lod
 ```

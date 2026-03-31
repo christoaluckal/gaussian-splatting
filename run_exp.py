@@ -7,21 +7,35 @@ import sys
 
 DEFAULT_NAIVE_LOD_STAGE_ITERATIONS = 5000
 WANDB_PROJECT = 'edgs-lod'
-DEFAULT_EDGS_MATCHES_PER_REF = 15000
+DEFAULT_EDGS_MATCHES_PER_REF = 1000
 DEFAULT_EDGS_NUM_REFS = 180
 DEFAULT_EDGS_NNS_PER_REF = 3
 DEFAULT_EDGS_SCALING_FACTOR = 0.001
 DEFAULT_EDGS_PROJ_ERR_TOLERANCE = 0.01
 DEFAULT_EDGS_ROMA_MODEL = 'outdoors'
+EDGS_TRAIN_RECIPE_LABEL = 'edgs-train-recipe'
+MODE_SETTINGS = {
+    'vanilla': {
+        'edgs_init': False,
+        'densify': True,
+        'edgs_train_recipe': False,
+    },
+    'edgs': {
+        'edgs_init': True,
+        'densify': False,
+        'edgs_train_recipe': True,
+    },
+}
 EXPERIMENTS = [
-    # {"label": "baseline", "start_scale": 2, "resolution_scales": [2], "match_resolution": False},
-    # {"label": "naive-lod", "start_scale": 2, "resolution_scales": [2, 4, 8], "match_resolution": False},
-    # {"label": "matched-naive-lod", "start_scale": 2, "resolution_scales": [2, 4, 8], "match_resolution": True},
+    {"label": "baseline", "start_scale": 2, "resolution_scales": [2], "match_resolution": False},
+    {"label": "naive-lod", "start_scale": 2, "resolution_scales": [2, 4, 8], "match_resolution": False},
+    {"label": "matched-naive-lod", "start_scale": 2, "resolution_scales": [2, 4, 8], "match_resolution": True},
     # {"label": "baseline", "start_scale": 4, "resolution_scales": [4], "match_resolution": False},
     # {"label": "naive-lod", "start_scale": 4, "resolution_scales": [4, 8], "match_resolution": False},
     # {"label": "matched-naive-lod", "start_scale": 4, "resolution_scales": [4, 8], "match_resolution": True},
-    {"label": "baseline", "start_scale": 8, "resolution_scales": [8], "match_resolution": False},
+    # {"label": "baseline", "start_scale": 8, "resolution_scales": [8], "match_resolution": False},
 ]
+EXPERIMENTS_BY_LABEL = {experiment['label']: experiment for experiment in EXPERIMENTS}
 
 
 def warn(message):
@@ -131,7 +145,46 @@ def _validate_experiment(experiment):
         )
 
 
-def build_experiment_name(scene_config, experiment, edgs_init, densify):
+def _build_launch_plan(scene_configs, run_group):
+    scene_configs_by_label = {scene_config['label']: scene_config for scene_config in scene_configs}
+    experiment_labels = ['baseline', 'naive-lod', 'matched-naive-lod']
+
+    def _matrix_for_mode(mode_name):
+        mode_settings = MODE_SETTINGS[mode_name]
+        jobs = []
+        for scene_label in ['base', 'split']:
+            for experiment_label in experiment_labels:
+                jobs.append(
+                    {
+                        'scene_config': scene_configs_by_label[scene_label],
+                        'experiment': EXPERIMENTS_BY_LABEL[experiment_label],
+                        **mode_settings,
+                    }
+                )
+        return jobs
+
+    if run_group in {'all', 'full-comparison'}:
+        return _matrix_for_mode('vanilla') + _matrix_for_mode('edgs')
+
+    if run_group == 'vanilla':
+        return _matrix_for_mode('vanilla')
+
+    if run_group in {'edgs', 'non-vanilla'}:
+        return _matrix_for_mode('edgs')
+
+    raise ValueError(f'Unsupported run group: {run_group}')
+
+
+def _derive_wandb_group(base_source, run_group, iterations, explicit_group):
+    if explicit_group:
+        return explicit_group
+
+    scene_name = os.path.basename(os.path.dirname(_normalize_source_path(base_source)))
+    iteration_label = iterations if iterations is not None else 'default'
+    return f'{scene_name}-{run_group}-it{iteration_label}'
+
+
+def build_experiment_name(scene_config, experiment, edgs_init, densify, edgs_train_recipe):
     _validate_experiment(experiment)
     if not edgs_init and densify:
         mode_label = 'vanilla'
@@ -139,16 +192,28 @@ def build_experiment_name(scene_config, experiment, edgs_init, densify):
         init_label = 'edgs-init' if edgs_init else 'sfm-init'
         densify_label = 'densify' if densify else 'no-densify'
         mode_label = f'{init_label}-{densify_label}'
+    if edgs_train_recipe:
+        mode_label = f'{mode_label}-{EDGS_TRAIN_RECIPE_LABEL}'
     return (
         f"{scene_config['scene_name']}-{mode_label}-{experiment['label']}"
         f"-r{experiment['resolution_scales'][0]}"
     )
 
 
-def build_command(scene_config, experiment, args):
+def build_command(job, args):
+    scene_config = job['scene_config']
+    experiment = job['experiment']
     _validate_experiment(experiment)
-    edgs_init = args.edgs_init
-    experiment_name = build_experiment_name(scene_config, experiment, edgs_init, args.densify)
+    edgs_init = job['edgs_init']
+    densify = job['densify']
+    edgs_train_recipe = job['edgs_train_recipe']
+    experiment_name = build_experiment_name(
+        scene_config,
+        experiment,
+        edgs_init,
+        densify,
+        edgs_train_recipe,
+    )
     output_path = f"output/{experiment_name}"
     naive_lod_stage_iterations = _resolve_stage_iterations(scene_config, experiment)
     command = [
@@ -167,19 +232,25 @@ def build_command(scene_config, experiment, args):
         '--pkl_name',
         f"{output_path}/result.pkl",
         '--wandb_project',
-        WANDB_PROJECT,
+        args.wandb_project,
         '--wandb_name',
         experiment_name,
         '-x',
         str(scene_config['xtend']),
         '--eval',
     ]
+    if args.wandb_group is not None:
+        command.extend(['--wandb_group', args.wandb_group])
+    if args.iterations is not None:
+        command.extend(['--iterations', str(args.iterations)])
     if args.disable_viewer:
         command.append('--disable_viewer')
     if args.disable_wandb:
         command.append('--disable_wandb')
-    if not args.densify:
+    if not densify:
         command.append('--no-densify')
+    if edgs_train_recipe:
+        command.append('--edgs_train_recipe')
     if edgs_init:
         command.extend(
             [
@@ -232,10 +303,21 @@ def main():
         help='Iteration where the final extension should occur for the split variant.',
     )
     parser.add_argument(
-        '--densify',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Enable standard Gaussian densification during training.',
+        '--iterations',
+        type=int,
+        default=None,
+        help='Optional training iteration count forwarded to train_nomask.py.',
+    )
+    parser.add_argument(
+        '--run_group',
+        type=str,
+        choices=['all', 'vanilla', 'edgs', 'non-vanilla', 'full-comparison'],
+        default='full-comparison',
+        help=(
+            'Launch comparison subsets: `vanilla` = 6 no-EDGS runs; '
+            '`edgs`/`non-vanilla` = 6 EDGS runs; '
+            '`full-comparison`/`all` = all 12 runs.'
+        ),
     )
     parser.add_argument(
         '--disable_viewer',
@@ -249,12 +331,6 @@ def main():
         default=False,
         help='Disable Weights & Biases logging for spawned training runs.',
     )
-    parser.add_argument(
-        '--edgs_init',
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help='Enable EDGS-style initialization in train_nomask.py. Disabled by default.',
-    )
     parser.add_argument('--edgs_matches_per_ref', type=int, default=DEFAULT_EDGS_MATCHES_PER_REF)
     parser.add_argument('--edgs_num_refs', type=int, default=DEFAULT_EDGS_NUM_REFS)
     parser.add_argument('--edgs_nns_per_ref', type=int, default=DEFAULT_EDGS_NNS_PER_REF)
@@ -267,6 +343,18 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help='Apply EDGS initialization to split extension blocks as well.',
+    )
+    parser.add_argument(
+        '--wandb_project',
+        type=str,
+        default=WANDB_PROJECT,
+        help='Weights & Biases project for all launched runs.',
+    )
+    parser.add_argument(
+        '--wandb_group',
+        type=str,
+        default=None,
+        help='Optional shared W&B group name for all launched runs. Defaults to a derived comparison group.',
     )
     args = parser.parse_args()
 
@@ -282,14 +370,22 @@ def main():
         split_source,
         args.final_extension_iteration,
     )
-    for scene_config in scene_configs:
-        for experiment in EXPERIMENTS:
-            command = build_command(scene_config, experiment, args)
-            print('Running:', ' '.join(command))
-            try:
-                subprocess.run(command, check=True)
-            except Exception:
-                pass
+    args.wandb_group = _derive_wandb_group(
+        base_source,
+        args.run_group,
+        args.iterations,
+        args.wandb_group,
+    )
+    launch_plan = _build_launch_plan(scene_configs, args.run_group)
+    print(f'Run group `{args.run_group}` will launch {len(launch_plan)} job(s).')
+    print(f'Using W&B project `{args.wandb_project}` and group `{args.wandb_group}`.')
+    for job in launch_plan:
+        command = build_command(job, args)
+        print('Running:', ' '.join(command))
+        try:
+            subprocess.run(command, check=True)
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

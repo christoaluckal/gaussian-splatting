@@ -11,6 +11,7 @@
 
 import argparse
 import csv
+import math
 import os
 import pickle
 import sys
@@ -26,7 +27,7 @@ import torch
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
-from edgs_init import build_edgs_init_config
+from edgs_init import apply_edgs_initialization, build_edgs_init_config
 from gaussian_renderer import network_gui, render
 from scene import GaussianModel, Scene
 from utils.general_utils import get_expon_lr_func, safe_state
@@ -57,6 +58,39 @@ try:
     WANDB_FOUND = True
 except ImportError:
     WANDB_FOUND = False
+
+
+EDGS_TRAIN_RECIPE_OVERRIDES = {
+    'opacity_reset_interval': 30000,
+    'densify_from_iter': 500,
+    'densify_grad_threshold': 0.0002,
+    'exposure_lr_final': 0.0001,
+}
+
+
+def _apply_edgs_train_recipe_overrides(opt):
+    overrides = {}
+    for field_name, target_value in EDGS_TRAIN_RECIPE_OVERRIDES.items():
+        current_value = getattr(opt, field_name)
+        if current_value != target_value:
+            overrides[field_name] = (current_value, target_value)
+            setattr(opt, field_name, target_value)
+    return overrides
+
+
+def _apply_edgs_opacity_decay(gaussians):
+    gaussians._opacity.data.add_(math.log(0.99))
+
+
+def _apply_edgs_no_densify_prune(gaussians, radii, iteration, densify_until_iter, min_opacity=0.005):
+    if iteration >= densify_until_iter:
+        return
+
+    gaussians.tmp_radii = radii
+    prune_mask = (gaussians.get_opacity < min_opacity).squeeze()
+    gaussians.prune_points(prune_mask)
+    gaussians.tmp_radii = None
+    torch.cuda.empty_cache()
 
 def _build_viewpoint_stacks(scene, resolution_scales):
     viewpoint_dict = {
@@ -160,6 +194,11 @@ def _get_gpu_memory_mb():
     return torch.cuda.memory_reserved(device) / bytes_per_mb
 
 
+def _synchronize_cuda():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
 def training(
     dataset,
     opt,
@@ -177,6 +216,7 @@ def training(
     fixed_wandb_eval_view,
     edgs_init_cfg,
     densify,
+    edgs_train_recipe,
 ):
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == 'sparse_adam':
         sys.exit(
@@ -186,6 +226,12 @@ def training(
 
     resolution_scales, lod_scales = _prepare_resolution_scales(resolution_scales)
     finest_scale = resolution_scales[0]
+    recipe_overrides = {}
+    if edgs_train_recipe:
+        recipe_overrides = _apply_edgs_train_recipe_overrides(opt)
+        print('Using EDGS train recipe compatibility mode.')
+        if recipe_overrides:
+            print('Applied EDGS train recipe overrides:', recipe_overrides)
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -225,16 +271,34 @@ def training(
     scene_load_start_time = time.perf_counter()
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     initialization_start_time = time.perf_counter()
+    scene_edgs_init_cfg = edgs_init_cfg
+    # EDGS initializes the base block after Scene(...) and training_setup(...),
+    # not during scene construction.
+    if edgs_train_recipe and def_flag and edgs_init_cfg is not None and edgs_init_cfg.use:
+        scene_edgs_init_cfg = None
     scene = Scene(
         dataset,
         gaussians,
+        shuffle=not edgs_train_recipe,
         resolution_scales=resolution_scales,
-        edgs_init_cfg=edgs_init_cfg,
+        edgs_init_cfg=scene_edgs_init_cfg,
         training_args=opt,
         device="cuda",
     )
     initialization_time_sec = time.perf_counter() - initialization_start_time
     gaussians.training_setup(opt)
+    if edgs_train_recipe and def_flag and edgs_init_cfg is not None and edgs_init_cfg.use:
+        _synchronize_cuda()
+        edgs_base_init_start_time = time.perf_counter()
+        apply_edgs_initialization(
+            gaussians,
+            scene.getTrainCameras(scale=finest_scale),
+            edgs_init_cfg,
+            device="cuda",
+        )
+        _synchronize_cuda()
+        scene.runtime_stats['edgs_base_init_time_sec'] += time.perf_counter() - edgs_base_init_start_time
+        scene.runtime_stats['edgs_base_init_gpu_memory_mb'] = _get_gpu_memory_mb()
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -284,6 +348,12 @@ def training(
 
     scene_load_time_sec = time.perf_counter() - scene_load_start_time
     scene_load_gpu_memory_mb = _get_gpu_memory_mb()
+    edgs_base_init_time_sec = scene.runtime_stats.get('edgs_base_init_time_sec', 0.0)
+    edgs_base_init_gpu_memory_mb = scene.runtime_stats.get('edgs_base_init_gpu_memory_mb', 0.0)
+    edgs_extensions_init_time_sec = scene.runtime_stats.get('edgs_extensions_init_time_sec', 0.0)
+    edgs_extensions_init_gpu_memory_mb = scene.runtime_stats.get('edgs_extensions_init_gpu_memory_mb', 0.0)
+    edgs_extensions_init_count = scene.runtime_stats.get('edgs_extensions_init_count', 0)
+    edgs_total_init_time_sec = edgs_base_init_time_sec + edgs_extensions_init_time_sec
     _append_csv_row(
         runtime_metrics_csv,
         runtime_csv_fields,
@@ -296,6 +366,32 @@ def training(
             'total_training_time_sec': '',
         },
     )
+    if edgs_base_init_time_sec > 0.0:
+        _append_csv_row(
+            runtime_metrics_csv,
+            runtime_csv_fields,
+            {
+                'event': 'edgs_base_init',
+                'iteration': 0,
+                'gpu_memory_mb': edgs_base_init_gpu_memory_mb,
+                'init_time_sec': edgs_base_init_time_sec,
+                'scene_load_time_sec': '',
+                'total_training_time_sec': '',
+            },
+        )
+    if edgs_extensions_init_count > 0:
+        _append_csv_row(
+            runtime_metrics_csv,
+            runtime_csv_fields,
+            {
+                'event': 'edgs_extensions_init',
+                'iteration': 0,
+                'gpu_memory_mb': edgs_extensions_init_gpu_memory_mb,
+                'init_time_sec': edgs_extensions_init_time_sec,
+                'scene_load_time_sec': '',
+                'total_training_time_sec': '',
+            },
+        )
     _append_csv_row(
         runtime_metrics_csv,
         runtime_csv_fields,
@@ -312,15 +408,31 @@ def training(
         tb_writer.add_scalar('runtime/init_time_sec', initialization_time_sec, 0)
         tb_writer.add_scalar('runtime/gpu_memory_scene_load_mb', scene_load_gpu_memory_mb, 0)
         tb_writer.add_scalar('runtime/scene_load_time_sec', scene_load_time_sec, 0)
+        if edgs_base_init_time_sec > 0.0:
+            tb_writer.add_scalar('runtime/edgs_base_init_time_sec', edgs_base_init_time_sec, 0)
+            tb_writer.add_scalar('runtime/edgs_base_init_gpu_memory_mb', edgs_base_init_gpu_memory_mb, 0)
+        if edgs_extensions_init_count > 0:
+            tb_writer.add_scalar('runtime/edgs_extensions_init_time_sec', edgs_extensions_init_time_sec, 0)
+            tb_writer.add_scalar('runtime/edgs_extensions_init_gpu_memory_mb', edgs_extensions_init_gpu_memory_mb, 0)
+            tb_writer.add_scalar('runtime/edgs_extensions_init_count', edgs_extensions_init_count, 0)
+        if edgs_total_init_time_sec > 0.0:
+            tb_writer.add_scalar('runtime/edgs_total_init_time_sec', edgs_total_init_time_sec, 0)
     if WANDB_FOUND and wandb.run is not None:
-        wandb.log(
-            {
-                'runtime/init_time_sec': initialization_time_sec,
-                'runtime/gpu_memory_scene_load_mb': scene_load_gpu_memory_mb,
-                'runtime/scene_load_time_sec': scene_load_time_sec,
-            },
-            step=0,
-        )
+        runtime_log = {
+            'runtime/init_time_sec': initialization_time_sec,
+            'runtime/gpu_memory_scene_load_mb': scene_load_gpu_memory_mb,
+            'runtime/scene_load_time_sec': scene_load_time_sec,
+        }
+        if edgs_base_init_time_sec > 0.0:
+            runtime_log['runtime/edgs_base_init_time_sec'] = edgs_base_init_time_sec
+            runtime_log['runtime/edgs_base_init_gpu_memory_mb'] = edgs_base_init_gpu_memory_mb
+        if edgs_extensions_init_count > 0:
+            runtime_log['runtime/edgs_extensions_init_time_sec'] = edgs_extensions_init_time_sec
+            runtime_log['runtime/edgs_extensions_init_gpu_memory_mb'] = edgs_extensions_init_gpu_memory_mb
+            runtime_log['runtime/edgs_extensions_init_count'] = edgs_extensions_init_count
+        if edgs_total_init_time_sec > 0.0:
+            runtime_log['runtime/edgs_total_init_time_sec'] = edgs_total_init_time_sec
+        wandb.log(runtime_log, step=0)
 
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
@@ -377,7 +489,8 @@ def training(
                     network_gui.conn = None
 
             iter_start.record()
-            gaussians.update_learning_rate(iteration)
+            lr_iteration = max(iteration, 8_000) if edgs_train_recipe else iteration
+            gaussians.update_learning_rate(lr_iteration)
 
             if iteration % 1000 == 0:
                 gaussians.oneupSHdegree()
@@ -439,6 +552,16 @@ def training(
 
             loss.backward()
             iter_end.record()
+
+            if iteration < opt.iterations and edgs_train_recipe:
+                if use_sparse_adam:
+                    visible = radii > 0
+                    gaussians.optimizer.step(visible, radii.shape[0])
+                    gaussians.optimizer.zero_grad(set_to_none=True)
+                else:
+                    gaussians.optimizer.step()
+                    gaussians.optimizer.zero_grad(set_to_none=True)
+                gaussians.exposure_optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
                 ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
@@ -570,6 +693,16 @@ def training(
                         dataset.white_background and iteration == opt.densify_from_iter
                     ):
                         gaussians.reset_opacity()
+                elif edgs_train_recipe:
+                    _apply_edgs_no_densify_prune(
+                        gaussians,
+                        radii,
+                        iteration,
+                        opt.densify_until_iter,
+                    )
+
+                if edgs_train_recipe and iteration < opt.densify_until_iter and iteration % 10 == 0:
+                    _apply_edgs_opacity_decay(gaussians)
 
                 if iteration % splitter_itr == 0 and not def_flag:
                     print('Adding new gaussians')
@@ -600,7 +733,7 @@ def training(
                         total_viewpoint_count = previous_num_viewpoints
                         print('No new viewpoints were added by this extension step.')
 
-                if iteration < opt.iterations:
+                if iteration < opt.iterations and not edgs_train_recipe:
                     gaussians.exposure_optimizer.step()
                     gaussians.exposure_optimizer.zero_grad(set_to_none=True)
                     if use_sparse_adam:
@@ -846,8 +979,15 @@ if __name__ == '__main__':
         default=True,
         help='Apply EDGS initialization to split extension blocks as well.',
     )
+    parser.add_argument(
+        '--edgs_train_recipe',
+        action='store_true',
+        default=False,
+        help='Use EDGS-like optimizer defaults and training schedule after initialization.',
+    )
     parser.add_argument('--disable_wandb', action='store_true', default=False)
     parser.add_argument('--wandb_project', type=str, default='gaussian-splatting')
+    parser.add_argument('--wandb_group', type=str, default=None)
     parser.add_argument('--wandb_name', type=str, default='naive-lod')
     args = parser.parse_args(sys.argv[1:])
 
@@ -875,6 +1015,7 @@ if __name__ == '__main__':
     if WANDB_FOUND and not args.disable_wandb:
         wandb_context = wandb.init(
             project=args.wandb_project,
+            group=args.wandb_group,
             name=args.wandb_name,
             config=vars(args),
         )
@@ -898,6 +1039,7 @@ if __name__ == '__main__':
             fixed_wandb_eval_view,
             edgs_init_cfg,
             args.densify,
+            args.edgs_train_recipe,
         )
 
     print('\nTraining complete.')

@@ -12,6 +12,8 @@
 import os
 import random
 import json
+import time
+import torch
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -47,6 +49,13 @@ class Scene:
         self.edgs_init_cfg = edgs_init_cfg
         self.training_args = training_args
         self.device = device
+        self.runtime_stats = {
+            'edgs_base_init_time_sec': 0.0,
+            'edgs_base_init_gpu_memory_mb': 0.0,
+            'edgs_extensions_init_time_sec': 0.0,
+            'edgs_extensions_init_gpu_memory_mb': 0.0,
+            'edgs_extensions_init_count': 0,
+        }
 
         print(f"Creating additional {self.xtend} gaussians")
         self.x_gauss = [copy.deepcopy(self.gaussians) for _ in range(self.xtend)]
@@ -119,11 +128,10 @@ class Scene:
             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
             if self._should_apply_edgs_init_to_base():
                 self.gaussians.training_setup(self.training_args)
-                apply_edgs_initialization(
+                self._apply_timed_edgs_initialization(
                     self.gaussians,
                     self.train_cameras[reference_resolution_scale],
-                    self.edgs_init_cfg,
-                    device=self.device,
+                    phase='base',
                 )
 
         self.extension_set = []
@@ -148,6 +156,48 @@ class Scene:
             and self.edgs_init_cfg.use
             and self.edgs_init_cfg.init_extensions
         )
+
+    def _synchronize_cuda(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _get_gpu_memory_mb(self):
+        if not torch.cuda.is_available():
+            return 0.0
+
+        device = torch.cuda.current_device()
+        bytes_per_mb = 1024.0 * 1024.0
+        return torch.cuda.memory_reserved(device) / bytes_per_mb
+
+    def _apply_timed_edgs_initialization(self, gaussians, train_cameras, phase):
+        self._synchronize_cuda()
+        start_time = time.perf_counter()
+        applied = apply_edgs_initialization(
+            gaussians,
+            train_cameras,
+            self.edgs_init_cfg,
+            device=self.device,
+        )
+        self._synchronize_cuda()
+        elapsed_time_sec = time.perf_counter() - start_time
+        gpu_memory_mb = self._get_gpu_memory_mb()
+        if not applied:
+            return False
+
+        if phase == 'base':
+            self.runtime_stats['edgs_base_init_time_sec'] += elapsed_time_sec
+            self.runtime_stats['edgs_base_init_gpu_memory_mb'] = gpu_memory_mb
+        elif phase == 'extension':
+            self.runtime_stats['edgs_extensions_init_time_sec'] += elapsed_time_sec
+            self.runtime_stats['edgs_extensions_init_gpu_memory_mb'] = max(
+                self.runtime_stats['edgs_extensions_init_gpu_memory_mb'],
+                gpu_memory_mb,
+            )
+            self.runtime_stats['edgs_extensions_init_count'] += 1
+        else:
+            raise ValueError(f'Unsupported EDGS init phase: {phase}')
+
+        return True
 
     def create_2nd_set(self,index,res_scales, args):
         new_train_cameras = {}
@@ -190,11 +240,10 @@ class Scene:
         self.x_gauss[index-1].create_from_pcd(new_scene_info.point_cloud, new_scene_info.train_cameras, new_cameras_extent)
         if self._should_apply_edgs_init_to_extensions():
             self.x_gauss[index-1].training_setup(self.training_args)
-            apply_edgs_initialization(
+            self._apply_timed_edgs_initialization(
                 self.x_gauss[index-1],
                 new_train_cameras[reference_resolution_scale],
-                self.edgs_init_cfg,
-                device=self.device,
+                phase='extension',
             )
 
         xset = [new_train_cameras,new_test_cameras]

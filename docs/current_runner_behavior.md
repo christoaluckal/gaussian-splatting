@@ -7,10 +7,12 @@ This document describes the active behavior of `frankenstein_base/run_exp.py`.
 It is the runner handoff reference for:
 
 - experiment naming
+- comparison-matrix launch behavior
 - LoD scale semantics
 - split-scene handling
 - EDGS initialization toggles
 - densification toggles
+- W&B grouping behavior
 - default runtime flags
 
 ## Experiment authority
@@ -41,17 +43,37 @@ Current effective behavior is:
 - `resolution_scales=[2,4,8]` means `1/2`, `1/4`, and `1/8` of original size
 - W&B eval images reflect those resized camera tensors directly
 
-## Active experiment matrix
+## Active comparison matrix
 
-The checked-in experiment list is currently minimal and only includes:
+The active runner now supports explicit launch groups through `--run_group`.
 
-- `{"label": "baseline", "start_scale": 8, "resolution_scales": [8], "match_resolution": False}`
+Current intended comparison matrix:
 
-Other entries are left commented out in the file.
+- `vanilla`: 6 runs
+  - init mode: no EDGS
+  - scene mode: base and split
+  - schedule mode: baseline, naive LoD, matched naive LoD
+- `edgs` or `non-vanilla`: 6 runs
+  - init mode: EDGS
+  - scene mode: base and split
+  - schedule mode: baseline, naive LoD, matched naive LoD
+- `full-comparison` or `all`: all 12 runs together
+
+This reflects the meaningful comparison space:
+
+- EDGS init vs no EDGS init
+- split incremental training vs non-split training
+- no LoD vs LoD
+- unmatched LoD vs matched LoD
+
+Important nuance:
+
+- `matched-naive-lod` is only meaningful for the LoD path
+- baseline runs still exist for both base and split scenes, but "matched" does not create a separate non-LoD baseline mode
 
 ## Scene variants launched
 
-`run_exp.py` launches two scene variants from one command:
+`run_exp.py` can launch both scene variants from one command:
 
 - base scene from `--base_source`
 - split scene from `--split_source`
@@ -73,6 +95,7 @@ Experiment names currently include:
 - scene name
 - init mode
 - densification mode
+- EDGS train-recipe marker when active
 - experiment label
 - first resolution scale
 
@@ -82,6 +105,31 @@ Mode labels:
 - `edgs-init-densify`
 - `edgs-init-no-densify`
 - `sfm-init-no-densify`
+
+When EDGS compatibility training is active, the runner appends:
+
+- `-edgs-train-recipe`
+
+## Per-job comparison policy
+
+The comparison runner now chooses some settings per job instead of globally per invocation.
+
+Current policy:
+
+- vanilla comparison jobs:
+  - no EDGS init
+  - densification enabled
+  - no EDGS compatibility training recipe
+- EDGS comparison jobs:
+  - EDGS init enabled
+  - densification disabled
+  - EDGS compatibility training recipe enabled
+
+This is the current fairness policy for comparing:
+
+- EDGS initialization
+- naive LoD scheduling
+- incremental split-scene training
 
 ## Densification control
 
@@ -103,7 +151,6 @@ When disabled:
 
 The runner exposes:
 
-- `--edgs_init`
 - `--edgs_matches_per_ref`
 - `--edgs_num_refs`
 - `--edgs_nns_per_ref`
@@ -113,7 +160,9 @@ The runner exposes:
 - `--edgs_add_sfm_init`
 - `--edgs_init_extensions` / `--no-edgs_init_extensions`
 
-These are forwarded into `train_nomask.py`.
+These are forwarded into EDGS jobs inside the comparison matrix.
+
+The runner no longer uses a single top-level `--edgs_init` toggle to decide the whole launch set.
 
 ## Default runtime flags
 
@@ -126,6 +175,19 @@ So runner-launched jobs:
 
 - do not bind the network viewer unless explicitly re-enabled
 - do log to W&B unless `--disable_wandb` is passed
+
+The runner also exposes:
+
+- `--wandb_project`
+- `--wandb_group`
+
+Current behavior:
+
+- all jobs in one comparison launch can share one W&B project
+- all jobs in one comparison launch can share one W&B group
+- each job still gets its own distinct W&B run name
+
+More detailed logging behavior lives in `logging_behavior.md`.
 
 ## Failure handling
 

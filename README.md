@@ -17,9 +17,11 @@ This directory is the working fork used for experiment-pipeline changes around:
 Current additions on top of the upstream baseline:
 
 - `run_exp.py` can launch runs with explicit `edgs_*` settings
+- `run_exp.py` can launch the current 12-run comparison matrix with shared W&B project/group metadata
 - `train_nomask.py` accepts `edgs_*` arguments and forwards them into scene construction
 - `edgs_init.py` imports the EDGS correspondence initializer and applies it locally
 - split extension blocks can also use EDGS initialization
+- runtime logging now records EDGS base-block and split-extension initialization timing
 
 Important current limitation:
 
@@ -88,6 +90,13 @@ For split scenes:
 
 `run_exp.py` exposes the same controls for experiment launches.
 
+Current comparison-runner additions also include:
+
+- `--run_group` for `vanilla`, `edgs`, or full 12-run comparison launches
+- `--iterations` pass-through into `train_nomask.py`
+- shared `--wandb_project` and `--wandb_group` wiring across all runner-launched jobs
+- EDGS-only compatibility training mode applied per job inside the comparison matrix
+
 ### Example
 
 ```bash
@@ -105,8 +114,9 @@ python run_exp.py \
 
 More detailed notes live in:
 
-- [docs/initialization_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/initialization_behavior.md)
-- [docs/current_runner_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/current_runner_behavior.md)
-- [docs/colmap_splitter_behavior.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/colmap_splitter_behavior.md)
-- [docs/handoff.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/handoff.md)
-- [docs/edgs_pipeline_notes.md](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/docs/edgs_pipeline_notes.md)
+- `docs/initialization_behavior.md`
+- `docs/current_runner_behavior.md`
+- `docs/colmap_splitter_behavior.md`
+- `docs/logging_behavior.md`
+- `docs/handoff.md`
+- `docs/edgs_pipeline_notes.md`
