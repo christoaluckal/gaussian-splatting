@@ -14,7 +14,10 @@ import csv
 import math
 import os
 import pickle
+import shutil
+import subprocess
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -58,6 +61,12 @@ try:
     WANDB_FOUND = True
 except ImportError:
     WANDB_FOUND = False
+
+try:
+    import pynvml  # type: ignore
+    PYNVML_FOUND = True
+except ImportError:
+    PYNVML_FOUND = False
 
 
 EDGS_TRAIN_RECIPE_OVERRIDES = {
@@ -164,9 +173,6 @@ def _reset_naive_lod_phase(next_iteration, lod_state):
 
 
 def _initialize_csv_logger(csv_path, fieldnames):
-    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
-        return
-
     with open(csv_path, 'w', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -176,6 +182,11 @@ def _append_csv_row(csv_path, fieldnames, row):
     with open(csv_path, 'a', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writerow(row)
+
+
+def _remove_if_exists(path):
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def _select_fixed_wandb_eval_view(scene, eval_scale):
@@ -197,6 +208,212 @@ def _get_gpu_memory_mb():
 def _synchronize_cuda():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+class _GpuUsageSampler:
+    def __init__(self, csv_path, interval_sec=1.0):
+        self.csv_path = csv_path
+        self.interval_sec = interval_sec
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._samples = []
+        self._csv_file = None
+        self._writer = None
+        self._device_index = None
+        self._nvml_handle = None
+        self._start_time = None
+        self._provider = None
+        self._error = None
+        self.fieldnames = [
+            'sample_idx',
+            'timestamp_unix_sec',
+            'elapsed_sec',
+            'gpu_index',
+            'gpu_utilization_pct',
+            'memory_utilization_pct',
+            'memory_used_mb',
+            'memory_total_mb',
+            'power_w',
+        ]
+
+    def start(self):
+        if not torch.cuda.is_available():
+            self._error = 'cuda unavailable'
+            return False
+        self._device_index = torch.cuda.current_device()
+        try:
+            if PYNVML_FOUND:
+                pynvml.nvmlInit()
+                self._provider = 'pynvml'
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(self._device_index)
+            elif shutil.which('nvidia-smi'):
+                self._provider = 'nvidia-smi'
+            else:
+                self._error = 'pynvml unavailable and nvidia-smi not found'
+                return False
+            self._csv_file = open(self.csv_path, 'w', newline='')
+            self._writer = csv.DictWriter(self._csv_file, fieldnames=self.fieldnames)
+            self._writer.writeheader()
+            self._start_time = time.perf_counter()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+            return True
+        except Exception as exc:
+            self._error = str(exc)
+            self._close_file()
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+            return False
+
+    def stop(self):
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join(timeout=max(5.0, self.interval_sec * 4))
+        summary = self._build_summary()
+        self._close_file()
+        if self._provider == 'pynvml':
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+        return summary
+
+    def _close_file(self):
+        if self._csv_file is not None:
+            self._csv_file.close()
+            self._csv_file = None
+
+    def _sample_pynvml(self):
+        util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+        mem = pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+        try:
+            power_w = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle) / 1000.0
+        except Exception:
+            power_w = None
+        return {
+            'gpu_utilization_pct': float(util.gpu),
+            'memory_utilization_pct': float(util.memory),
+            'memory_used_mb': mem.used / (1024.0 * 1024.0),
+            'memory_total_mb': mem.total / (1024.0 * 1024.0),
+            'power_w': power_w,
+        }
+
+    def _sample_nvidia_smi(self):
+        command = [
+            'nvidia-smi',
+            f'--id={self._device_index}',
+            '--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,power.draw',
+            '--format=csv,noheader,nounits',
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        values = [value.strip() for value in result.stdout.strip().split(',')]
+        if len(values) != 5:
+            raise RuntimeError(f'unexpected nvidia-smi output: {result.stdout!r}')
+
+        def _parse_numeric(raw_value):
+            if raw_value in {'N/A', '[N/A]'}:
+                return None
+            return float(raw_value)
+
+        return {
+            'gpu_utilization_pct': _parse_numeric(values[0]),
+            'memory_utilization_pct': _parse_numeric(values[1]),
+            'memory_used_mb': _parse_numeric(values[2]),
+            'memory_total_mb': _parse_numeric(values[3]),
+            'power_w': _parse_numeric(values[4]),
+        }
+
+    def _read_gpu_sample(self):
+        if self._provider == 'pynvml':
+            return self._sample_pynvml()
+        if self._provider == 'nvidia-smi':
+            return self._sample_nvidia_smi()
+        raise RuntimeError(f'unsupported GPU sampler provider: {self._provider}')
+
+    def _sample_once(self):
+        gpu_sample = self._read_gpu_sample()
+
+        timestamp_unix_sec = time.time()
+        elapsed_sec = time.perf_counter() - self._start_time
+        sample = {
+            'sample_idx': len(self._samples),
+            'timestamp_unix_sec': timestamp_unix_sec,
+            'elapsed_sec': elapsed_sec,
+            'gpu_index': self._device_index,
+            'gpu_utilization_pct': gpu_sample['gpu_utilization_pct'],
+            'memory_utilization_pct': gpu_sample['memory_utilization_pct'],
+            'memory_used_mb': gpu_sample['memory_used_mb'],
+            'memory_total_mb': gpu_sample['memory_total_mb'],
+            'power_w': gpu_sample['power_w'],
+        }
+        self._samples.append(sample)
+        self._writer.writerow(sample)
+        self._csv_file.flush()
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                self._sample_once()
+            except Exception as exc:
+                self._error = str(exc)
+                break
+            self._stop_event.wait(self.interval_sec)
+        if self._provider is not None and self._writer is not None:
+            try:
+                self._sample_once()
+            except Exception:
+                pass
+
+    def _integrate(self, key, transform=lambda value: value):
+        if len(self._samples) < 2:
+            return 0.0
+        total = 0.0
+        for prev, current in zip(self._samples, self._samples[1:]):
+            prev_value = prev.get(key)
+            if prev_value is None:
+                continue
+            delta_t = max(0.0, current['elapsed_sec'] - prev['elapsed_sec'])
+            total += transform(prev_value) * delta_t
+        return total
+
+    def _build_summary(self):
+        if not self._samples:
+            return {
+                'available': False,
+                'provider': self._provider,
+                'error': self._error,
+            }
+
+        gpu_utils = [sample['gpu_utilization_pct'] for sample in self._samples if sample['gpu_utilization_pct'] is not None]
+        mem_utils = [sample['memory_utilization_pct'] for sample in self._samples if sample['memory_utilization_pct'] is not None]
+        mem_used = [sample['memory_used_mb'] for sample in self._samples if sample['memory_used_mb'] is not None]
+        power_values = [sample['power_w'] for sample in self._samples if sample['power_w'] is not None]
+
+        gpu_utilization_seconds = self._integrate('gpu_utilization_pct', lambda value: value / 100.0)
+        gpu_memory_gb_hours = self._integrate('memory_used_mb', lambda value: (value / 1024.0) / 3600.0)
+        gpu_energy_wh = self._integrate('power_w', lambda value: value / 3600.0) if power_values else None
+
+        return {
+            'available': True,
+            'provider': self._provider,
+            'error': self._error,
+            'sample_count': len(self._samples),
+            'sampling_interval_sec': self.interval_sec,
+            'gpu_utilization_avg_pct': sum(gpu_utils) / len(gpu_utils) if gpu_utils else None,
+            'gpu_utilization_peak_pct': max(gpu_utils) if gpu_utils else None,
+            'gpu_utilization_seconds': gpu_utilization_seconds,
+            'gpu_memory_utilization_avg_pct': sum(mem_utils) / len(mem_utils) if mem_utils else None,
+            'gpu_memory_utilization_peak_pct': max(mem_utils) if mem_utils else None,
+            'gpu_memory_used_avg_mb': sum(mem_used) / len(mem_used) if mem_used else None,
+            'gpu_memory_used_peak_mb': max(mem_used) if mem_used else None,
+            'gpu_memory_gb_hours': gpu_memory_gb_hours,
+            'gpu_power_avg_w': sum(power_values) / len(power_values) if power_values else None,
+            'gpu_power_peak_w': max(power_values) if power_values else None,
+            'gpu_energy_wh': gpu_energy_wh,
+            'total_observed_sec': self._samples[-1]['elapsed_sec'],
+        }
 
 
 def training(
@@ -261,12 +478,41 @@ def training(
         'scene_load_time_sec',
         'total_training_time_sec',
     ]
+    gpu_summary_csv_fields = [
+        'available',
+        'provider',
+        'sample_count',
+        'sampling_interval_sec',
+        'end_to_end_time_sec',
+        'gpu_utilization_avg_pct',
+        'gpu_utilization_peak_pct',
+        'gpu_utilization_seconds',
+        'gpu_memory_utilization_avg_pct',
+        'gpu_memory_utilization_peak_pct',
+        'gpu_memory_used_avg_mb',
+        'gpu_memory_used_peak_mb',
+        'gpu_memory_gb_hours',
+        'gpu_power_avg_w',
+        'gpu_power_peak_w',
+        'gpu_energy_wh',
+        'total_observed_sec',
+        'error',
+    ]
     train_metrics_csv = os.path.join(dataset.model_path, 'train_metrics.csv')
     eval_metrics_csv = os.path.join(dataset.model_path, 'eval_metrics.csv')
     runtime_metrics_csv = os.path.join(dataset.model_path, 'runtime_metrics.csv')
+    gpu_metrics_csv = os.path.join(dataset.model_path, 'gpu_metrics.csv')
+    gpu_summary_csv = os.path.join(dataset.model_path, 'gpu_summary.csv')
+    _remove_if_exists(gpu_metrics_csv)
     _initialize_csv_logger(train_metrics_csv, train_csv_fields)
     _initialize_csv_logger(eval_metrics_csv, eval_csv_fields)
     _initialize_csv_logger(runtime_metrics_csv, runtime_csv_fields)
+    _initialize_csv_logger(gpu_summary_csv, gpu_summary_csv_fields)
+
+    gpu_sampler = _GpuUsageSampler(gpu_metrics_csv)
+    gpu_sampler_started = gpu_sampler.start()
+    if not gpu_sampler_started:
+        print('GPU utilization sampler unavailable; proceeding without whole-run GPU utilization logging.')
 
     scene_load_start_time = time.perf_counter()
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
@@ -754,6 +1000,8 @@ def training(
         print(traceback.format_exc())
 
     total_training_time_sec = time.perf_counter() - training_start_time
+    gpu_summary = gpu_sampler.stop()
+    end_to_end_time_sec = scene_load_time_sec + total_training_time_sec
     print(f'Total training time: {total_training_time_sec:.2f}s')
     _append_csv_row(
         runtime_metrics_csv,
@@ -767,11 +1015,93 @@ def training(
             'total_training_time_sec': total_training_time_sec,
         },
     )
+    _append_csv_row(
+        gpu_summary_csv,
+        gpu_summary_csv_fields,
+        {
+            'available': gpu_summary.get('available', False),
+            'provider': gpu_summary.get('provider'),
+            'sample_count': gpu_summary.get('sample_count'),
+            'sampling_interval_sec': gpu_summary.get('sampling_interval_sec'),
+            'end_to_end_time_sec': end_to_end_time_sec,
+            'gpu_utilization_avg_pct': gpu_summary.get('gpu_utilization_avg_pct'),
+            'gpu_utilization_peak_pct': gpu_summary.get('gpu_utilization_peak_pct'),
+            'gpu_utilization_seconds': gpu_summary.get('gpu_utilization_seconds'),
+            'gpu_memory_utilization_avg_pct': gpu_summary.get('gpu_memory_utilization_avg_pct'),
+            'gpu_memory_utilization_peak_pct': gpu_summary.get('gpu_memory_utilization_peak_pct'),
+            'gpu_memory_used_avg_mb': gpu_summary.get('gpu_memory_used_avg_mb'),
+            'gpu_memory_used_peak_mb': gpu_summary.get('gpu_memory_used_peak_mb'),
+            'gpu_memory_gb_hours': gpu_summary.get('gpu_memory_gb_hours'),
+            'gpu_power_avg_w': gpu_summary.get('gpu_power_avg_w'),
+            'gpu_power_peak_w': gpu_summary.get('gpu_power_peak_w'),
+            'gpu_energy_wh': gpu_summary.get('gpu_energy_wh'),
+            'total_observed_sec': gpu_summary.get('total_observed_sec'),
+            'error': gpu_summary.get('error'),
+        },
+    )
     if tb_writer:
         tb_writer.add_scalar('runtime/total_training_time_sec', total_training_time_sec, opt.iterations)
+        tb_writer.add_scalar('runtime/end_to_end_time_sec', end_to_end_time_sec, opt.iterations)
+        if gpu_summary.get('available'):
+            if gpu_summary.get('gpu_utilization_avg_pct') is not None:
+                tb_writer.add_scalar('runtime/gpu_utilization_avg_pct', gpu_summary['gpu_utilization_avg_pct'], opt.iterations)
+            if gpu_summary.get('gpu_utilization_peak_pct') is not None:
+                tb_writer.add_scalar('runtime/gpu_utilization_peak_pct', gpu_summary['gpu_utilization_peak_pct'], opt.iterations)
+            if gpu_summary.get('gpu_utilization_seconds') is not None:
+                tb_writer.add_scalar('runtime/gpu_utilization_seconds', gpu_summary['gpu_utilization_seconds'], opt.iterations)
+            if gpu_summary.get('gpu_memory_used_avg_mb') is not None:
+                tb_writer.add_scalar('runtime/gpu_memory_used_avg_mb', gpu_summary['gpu_memory_used_avg_mb'], opt.iterations)
+            if gpu_summary.get('gpu_memory_used_peak_mb') is not None:
+                tb_writer.add_scalar('runtime/gpu_memory_used_peak_mb', gpu_summary['gpu_memory_used_peak_mb'], opt.iterations)
+            if gpu_summary.get('gpu_memory_gb_hours') is not None:
+                tb_writer.add_scalar('runtime/gpu_memory_gb_hours', gpu_summary['gpu_memory_gb_hours'], opt.iterations)
+            if gpu_summary.get('gpu_power_avg_w') is not None:
+                tb_writer.add_scalar('runtime/gpu_power_avg_w', gpu_summary['gpu_power_avg_w'], opt.iterations)
+            if gpu_summary.get('gpu_power_peak_w') is not None:
+                tb_writer.add_scalar('runtime/gpu_power_peak_w', gpu_summary['gpu_power_peak_w'], opt.iterations)
+            if gpu_summary.get('gpu_energy_wh') is not None:
+                tb_writer.add_scalar('runtime/gpu_energy_wh', gpu_summary['gpu_energy_wh'], opt.iterations)
     if WANDB_FOUND and wandb.run is not None:
-        wandb.log({'runtime/total_training_time_sec': total_training_time_sec}, step=opt.iterations)
+        wandb_runtime_log = {
+            'runtime/total_training_time_sec': total_training_time_sec,
+            'runtime/end_to_end_time_sec': end_to_end_time_sec,
+            'runtime/gpu_sampler_available': gpu_summary.get('available', False),
+        }
+        if gpu_summary.get('available'):
+            if gpu_summary.get('gpu_utilization_avg_pct') is not None:
+                wandb_runtime_log['runtime/gpu_utilization_avg_pct'] = gpu_summary['gpu_utilization_avg_pct']
+            if gpu_summary.get('gpu_utilization_peak_pct') is not None:
+                wandb_runtime_log['runtime/gpu_utilization_peak_pct'] = gpu_summary['gpu_utilization_peak_pct']
+            if gpu_summary.get('gpu_utilization_seconds') is not None:
+                wandb_runtime_log['runtime/gpu_utilization_seconds'] = gpu_summary['gpu_utilization_seconds']
+            if gpu_summary.get('gpu_memory_utilization_avg_pct') is not None:
+                wandb_runtime_log['runtime/gpu_memory_utilization_avg_pct'] = gpu_summary['gpu_memory_utilization_avg_pct']
+            if gpu_summary.get('gpu_memory_utilization_peak_pct') is not None:
+                wandb_runtime_log['runtime/gpu_memory_utilization_peak_pct'] = gpu_summary['gpu_memory_utilization_peak_pct']
+            if gpu_summary.get('gpu_memory_used_avg_mb') is not None:
+                wandb_runtime_log['runtime/gpu_memory_used_avg_mb'] = gpu_summary['gpu_memory_used_avg_mb']
+            if gpu_summary.get('gpu_memory_used_peak_mb') is not None:
+                wandb_runtime_log['runtime/gpu_memory_used_peak_mb'] = gpu_summary['gpu_memory_used_peak_mb']
+            if gpu_summary.get('gpu_memory_gb_hours') is not None:
+                wandb_runtime_log['runtime/gpu_memory_gb_hours'] = gpu_summary['gpu_memory_gb_hours']
+            if gpu_summary.get('gpu_power_avg_w') is not None:
+                wandb_runtime_log['runtime/gpu_power_avg_w'] = gpu_summary['gpu_power_avg_w']
+            if gpu_summary.get('gpu_power_peak_w') is not None:
+                wandb_runtime_log['runtime/gpu_power_peak_w'] = gpu_summary['gpu_power_peak_w']
+            if gpu_summary.get('gpu_energy_wh') is not None:
+                wandb_runtime_log['runtime/gpu_energy_wh'] = gpu_summary['gpu_energy_wh']
+            wandb_runtime_log['runtime/gpu_sampler_provider'] = gpu_summary.get('provider')
+            wandb_runtime_log['runtime/gpu_sample_count'] = gpu_summary.get('sample_count')
+        wandb.log(wandb_runtime_log, step=opt.iterations)
         wandb.summary['runtime/total_training_time_sec'] = total_training_time_sec
+        wandb.summary['runtime/end_to_end_time_sec'] = end_to_end_time_sec
+        wandb.summary['runtime/gpu_sampler_available'] = gpu_summary.get('available', False)
+        if gpu_summary.get('available'):
+            for key, value in wandb_runtime_log.items():
+                if key not in {'runtime/total_training_time_sec', 'runtime/end_to_end_time_sec'}:
+                    wandb.summary[key] = value
+        elif gpu_summary.get('error'):
+            wandb.summary['runtime/gpu_sampler_error'] = gpu_summary.get('error')
 
     if pkl_name:
         with open(pkl_name, 'wb') as f:
@@ -1017,6 +1347,7 @@ if __name__ == '__main__':
             project=args.wandb_project,
             group=args.wandb_group,
             name=args.wandb_name,
+            resume='never',
             config=vars(args),
         )
 
