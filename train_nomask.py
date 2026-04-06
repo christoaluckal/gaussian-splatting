@@ -149,13 +149,54 @@ def _select_fixed_wandb_eval_view(scene, eval_scale):
     return test_cameras[len(test_cameras) // 2]
 
 
-def _get_gpu_memory_mb():
+def _get_gpu_memory_stats_mb():
     if not torch.cuda.is_available():
-        return 0.0
+        return {
+            'allocated_mb': 0.0,
+            'reserved_mb': 0.0,
+            'max_allocated_mb': 0.0,
+            'max_reserved_mb': 0.0,
+        }
 
     device = torch.cuda.current_device()
     bytes_per_mb = 1024.0 * 1024.0
-    return torch.cuda.memory_reserved(device) / bytes_per_mb
+    return {
+        'allocated_mb': torch.cuda.memory_allocated(device) / bytes_per_mb,
+        'reserved_mb': torch.cuda.memory_reserved(device) / bytes_per_mb,
+        'max_allocated_mb': torch.cuda.max_memory_allocated(device) / bytes_per_mb,
+        'max_reserved_mb': torch.cuda.max_memory_reserved(device) / bytes_per_mb,
+    }
+
+
+def _tensor_nbytes(tensor):
+    if tensor is None:
+        return 0
+    return tensor.numel() * tensor.element_size()
+
+
+def _iter_tensors(value):
+    if torch.is_tensor(value):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _iter_tensors(nested)
+    elif isinstance(value, (list, tuple, set)):
+        for nested in value:
+            yield from _iter_tensors(nested)
+
+
+def _gaussian_model_memory_mb(gaussians):
+    total_bytes = 0
+    seen_ptrs = set()
+
+    for value in gaussians.__dict__.values():
+        for tensor in _iter_tensors(value):
+            ptr = tensor.data_ptr()
+            if ptr != 0 and ptr not in seen_ptrs:
+                total_bytes += _tensor_nbytes(tensor)
+                seen_ptrs.add(ptr)
+
+    return total_bytes / (1024.0 * 1024.0)
 
 
 def training(
@@ -206,7 +247,11 @@ def training(
     runtime_csv_fields = [
         'event',
         'iteration',
-        'gpu_memory_mb',
+        'gpu_allocated_mb',
+        'gpu_reserved_mb',
+        'gpu_peak_allocated_mb',
+        'gpu_peak_reserved_mb',
+        'gaussian_model_mb',
         'scene_load_time_sec',
         'total_training_time_sec',
     ]
@@ -216,6 +261,10 @@ def training(
     _initialize_csv_logger(train_metrics_csv, train_csv_fields)
     _initialize_csv_logger(eval_metrics_csv, eval_csv_fields)
     _initialize_csv_logger(runtime_metrics_csv, runtime_csv_fields)
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
     scene_load_start_time = time.perf_counter()
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
@@ -262,25 +311,36 @@ def training(
         fixed_wandb_eval_view = _select_fixed_wandb_eval_view(scene, finest_scale)
 
     scene_load_time_sec = time.perf_counter() - scene_load_start_time
-    scene_load_gpu_memory_mb = _get_gpu_memory_mb()
+    scene_mem_stats = _get_gpu_memory_stats_mb()
+    scene_gaussian_model_mb = _gaussian_model_memory_mb(gaussians)
     _append_csv_row(
         runtime_metrics_csv,
         runtime_csv_fields,
         {
             'event': 'scene_load',
             'iteration': 0,
-            'gpu_memory_mb': scene_load_gpu_memory_mb,
+            'gpu_allocated_mb': scene_mem_stats['allocated_mb'],
+            'gpu_reserved_mb': scene_mem_stats['reserved_mb'],
+            'gpu_peak_allocated_mb': scene_mem_stats['max_allocated_mb'],
+            'gpu_peak_reserved_mb': scene_mem_stats['max_reserved_mb'],
+            'gaussian_model_mb': scene_gaussian_model_mb,
             'scene_load_time_sec': scene_load_time_sec,
             'total_training_time_sec': '',
         },
     )
     if tb_writer:
-        tb_writer.add_scalar('runtime/gpu_memory_scene_load_mb', scene_load_gpu_memory_mb, 0)
+        tb_writer.add_scalar('runtime/gpu_allocated_scene_load_mb', scene_mem_stats['allocated_mb'], 0)
+        tb_writer.add_scalar('runtime/gpu_peak_allocated_scene_load_mb', scene_mem_stats['max_allocated_mb'], 0)
+        tb_writer.add_scalar('runtime/gaussian_model_scene_load_mb', scene_gaussian_model_mb, 0)
         tb_writer.add_scalar('runtime/scene_load_time_sec', scene_load_time_sec, 0)
     if WANDB_FOUND and wandb.run is not None:
         wandb.log(
             {
-                'runtime/gpu_memory_scene_load_mb': scene_load_gpu_memory_mb,
+                'runtime/gpu_allocated_scene_load_mb': scene_mem_stats['allocated_mb'],
+                'runtime/gpu_reserved_scene_load_mb': scene_mem_stats['reserved_mb'],
+                'runtime/gpu_peak_allocated_scene_load_mb': scene_mem_stats['max_allocated_mb'],
+                'runtime/gpu_peak_reserved_scene_load_mb': scene_mem_stats['max_reserved_mb'],
+                'runtime/gaussian_model_scene_load_mb': scene_gaussian_model_mb,
                 'runtime/scene_load_time_sec': scene_load_time_sec,
             },
             step=0,
@@ -437,14 +497,19 @@ def training(
                     },
                 )
 
-                training_loop_gpu_memory_mb = _get_gpu_memory_mb()
+                runtime_mem_stats = _get_gpu_memory_stats_mb()
+                gaussian_model_mb = _gaussian_model_memory_mb(gaussians)
                 _append_csv_row(
                     runtime_metrics_csv,
                     runtime_csv_fields,
                     {
                         'event': 'iteration',
                         'iteration': iteration,
-                        'gpu_memory_mb': training_loop_gpu_memory_mb,
+                        'gpu_allocated_mb': runtime_mem_stats['allocated_mb'],
+                        'gpu_reserved_mb': runtime_mem_stats['reserved_mb'],
+                        'gpu_peak_allocated_mb': runtime_mem_stats['max_allocated_mb'],
+                        'gpu_peak_reserved_mb': runtime_mem_stats['max_reserved_mb'],
+                        'gaussian_model_mb': gaussian_model_mb,
                         'scene_load_time_sec': '',
                         'total_training_time_sec': '',
                     },
@@ -456,20 +521,33 @@ def training(
                         {
                             'event': 'training_loop',
                             'iteration': iteration,
-                            'gpu_memory_mb': training_loop_gpu_memory_mb,
+                            'gpu_allocated_mb': runtime_mem_stats['allocated_mb'],
+                            'gpu_reserved_mb': runtime_mem_stats['reserved_mb'],
+                            'gpu_peak_allocated_mb': runtime_mem_stats['max_allocated_mb'],
+                            'gpu_peak_reserved_mb': runtime_mem_stats['max_reserved_mb'],
+                            'gaussian_model_mb': gaussian_model_mb,
                             'scene_load_time_sec': '',
                             'total_training_time_sec': '',
                         },
                     )
                     if tb_writer:
                         tb_writer.add_scalar(
-                            'runtime/gpu_memory_training_loop_mb',
-                            training_loop_gpu_memory_mb,
+                            'runtime/gpu_peak_allocated_training_loop_mb',
+                            runtime_mem_stats['max_allocated_mb'],
+                            iteration,
+                        )
+                        tb_writer.add_scalar(
+                            'runtime/gaussian_model_training_loop_mb',
+                            gaussian_model_mb,
                             iteration,
                         )
                     if WANDB_FOUND and wandb.run is not None:
                         wandb.log(
-                            {'runtime/gpu_memory_training_loop_mb': training_loop_gpu_memory_mb},
+                            {
+                                'runtime/gpu_peak_allocated_training_loop_mb': runtime_mem_stats['max_allocated_mb'],
+                                'runtime/gpu_peak_reserved_training_loop_mb': runtime_mem_stats['max_reserved_mb'],
+                                'runtime/gaussian_model_training_loop_mb': gaussian_model_mb,
+                            },
                             step=iteration,
                         )
 
@@ -584,13 +662,19 @@ def training(
 
     total_training_time_sec = time.perf_counter() - training_start_time
     print(f'Total training time: {total_training_time_sec:.2f}s')
+    final_mem_stats = _get_gpu_memory_stats_mb()
+    final_gaussian_model_mb = _gaussian_model_memory_mb(gaussians)
     _append_csv_row(
         runtime_metrics_csv,
         runtime_csv_fields,
         {
             'event': 'training_complete',
             'iteration': opt.iterations,
-            'gpu_memory_mb': '',
+            'gpu_allocated_mb': final_mem_stats['allocated_mb'],
+            'gpu_reserved_mb': final_mem_stats['reserved_mb'],
+            'gpu_peak_allocated_mb': final_mem_stats['max_allocated_mb'],
+            'gpu_peak_reserved_mb': final_mem_stats['max_reserved_mb'],
+            'gaussian_model_mb': final_gaussian_model_mb,
             'scene_load_time_sec': '',
             'total_training_time_sec': total_training_time_sec,
         },
@@ -598,8 +682,19 @@ def training(
     if tb_writer:
         tb_writer.add_scalar('runtime/total_training_time_sec', total_training_time_sec, opt.iterations)
     if WANDB_FOUND and wandb.run is not None:
-        wandb.log({'runtime/total_training_time_sec': total_training_time_sec}, step=opt.iterations)
+        wandb.log(
+            {
+                'runtime/total_training_time_sec': total_training_time_sec,
+                'runtime/gpu_peak_allocated_final_mb': final_mem_stats['max_allocated_mb'],
+                'runtime/gpu_peak_reserved_final_mb': final_mem_stats['max_reserved_mb'],
+                'runtime/gaussian_model_final_mb': final_gaussian_model_mb,
+            },
+            step=opt.iterations,
+        )
         wandb.summary['runtime/total_training_time_sec'] = total_training_time_sec
+        wandb.summary['runtime/gpu_peak_allocated_final_mb'] = final_mem_stats['max_allocated_mb']
+        wandb.summary['runtime/gpu_peak_reserved_final_mb'] = final_mem_stats['max_reserved_mb']
+        wandb.summary['runtime/gaussian_model_final_mb'] = final_gaussian_model_mb
 
     if pkl_name:
         with open(pkl_name, 'wb') as f:

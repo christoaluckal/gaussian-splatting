@@ -15,7 +15,7 @@ The runner assumes the source scenes already exist on disk.
 
 It does not create split scenes.
 
-For the current splitter-side scene format and split-script behavior, see [`docs/colmap_splitter_behavior.md`](/home/christoa/Workspace/splatting/gaussian-splatting/docs/colmap_splitter_behavior.md).
+For the current splitter-side scene format and split-script behavior, see [`docs/colmap_splitter_behavior.md`](/mnt/share/nas/christo/splatting/gaussian-splatting/docs/colmap_splitter_behavior.md).
 
 Expected inputs:
 
@@ -110,7 +110,7 @@ Runner-specific stage length behavior:
 - `total_levels` is `len(resolution_scales)` for that experiment
 - for base variants and baseline variants, the runner uses the default `5000`
 - when an extension actually appends new viewpoints, the trainer resets the active LoD phase to the coarsest configured scale on the next iteration
-- after that reset, viewpoint sampling is restricted to the newly appended viewpoint range rather than the older accumulated range
+- after that reset, viewpoint sampling remains uniform over all accumulated viewpoints; previously promoted viewpoints render at the finest scale, while the new active block follows the restarted LoD phase
 - example: if `split_source` is `..._split2/model0`, `final_extension_iteration = 7500`, and the LoD variant uses `resolution_scales = [2, 4, 8]`, then `splitter_itr = 7500`, `total_levels = 3`, and `naive_lod_stage_iterations = 2500`; the run trains at scales `8`, then `4`, then `2`, the extension triggers at iteration `7500`, and the next iteration restarts the new-viewpoint phase at scale `8`
 
 ## Actual experiment matrix
@@ -153,10 +153,10 @@ because the runner does not currently define a `matched-baseline` variant.
 
 - deterministic fixed-iteration LoD scheduling through `--resolution_scales` and `--naive_lod_stage_iterations`
 - split-specific LoD phase resets after extensions that add a new viewpoint block
-- split-specific viewpoint sampling that switches to the newest viewpoint block after such an extension
+- uniform viewpoint sampling across all accumulated viewpoints, with finest-scale rendering for previously promoted blocks and LoD rendering for the active block
 - finest-scale evaluation through the shared reporting path
 - default test evaluation every `1000` iterations, plus the final iteration
-- runtime logging for scene-load GPU memory and scene-load time, per-iteration GPU memory in `runtime_metrics.csv`, one training-loop GPU-memory point for dashboards, and total training time
+- runtime logging for scene-load allocated/reserved/peak GPU memory, Gaussian model size, scene-load time, per-iteration memory/model snapshots in `runtime_metrics.csv`, and total training time
 - CSV logging:
   - `train_metrics.csv`
   - `eval_metrics.csv`
@@ -175,10 +175,19 @@ Current W&B train logs:
 
 Current W&B runtime logs:
 
-- `runtime/gpu_memory_scene_load_mb`
+- `runtime/gpu_allocated_scene_load_mb`
+- `runtime/gpu_reserved_scene_load_mb`
+- `runtime/gpu_peak_allocated_scene_load_mb`
+- `runtime/gpu_peak_reserved_scene_load_mb`
+- `runtime/gaussian_model_scene_load_mb`
 - `runtime/scene_load_time_sec`
-- `runtime/gpu_memory_training_loop_mb`
+- `runtime/gpu_peak_allocated_training_loop_mb`
+- `runtime/gpu_peak_reserved_training_loop_mb`
+- `runtime/gaussian_model_training_loop_mb`
 - `runtime/total_training_time_sec` as a final-step metric and in W&B summary at the end of training
+- `runtime/gpu_peak_allocated_final_mb` in the final-step log and W&B summary
+- `runtime/gpu_peak_reserved_final_mb` in the final-step log and W&B summary
+- `runtime/gaussian_model_final_mb` in the final-step log and W&B summary
 
 Current W&B eval logs:
 

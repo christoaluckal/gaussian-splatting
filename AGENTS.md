@@ -82,10 +82,10 @@ means the effective training path is approximately:
 
 `runtime_metrics.csv` includes:
 
-- `scene_load` with `gpu_memory_mb` and `scene_load_time_sec`
-- `iteration` rows with per-iteration `gpu_memory_mb`
-- `training_loop` with the first in-loop `gpu_memory_mb` measurement
-- `training_complete` with `total_training_time_sec`
+- `scene_load` with `gpu_allocated_mb`, `gpu_reserved_mb`, `gpu_peak_allocated_mb`, `gpu_peak_reserved_mb`, `gaussian_model_mb`, and `scene_load_time_sec`
+- `iteration` rows with per-iteration `gpu_allocated_mb`, `gpu_reserved_mb`, `gpu_peak_allocated_mb`, `gpu_peak_reserved_mb`, and `gaussian_model_mb`
+- `training_loop` with the first in-loop `gpu_peak_*` and `gaussian_model_mb` snapshot
+- `training_complete` with final memory stats, `gaussian_model_mb`, and `total_training_time_sec`
 
 TensorBoard logging is enabled when available and logs `train/lod_scale` plus the runtime memory/time summary points.
 
@@ -106,10 +106,19 @@ Current W&B train logs include:
 
 Current W&B runtime logs include:
 
-- `runtime/gpu_memory_scene_load_mb`
+- `runtime/gpu_allocated_scene_load_mb`
+- `runtime/gpu_reserved_scene_load_mb`
+- `runtime/gpu_peak_allocated_scene_load_mb`
+- `runtime/gpu_peak_reserved_scene_load_mb`
+- `runtime/gaussian_model_scene_load_mb`
 - `runtime/scene_load_time_sec`
-- `runtime/gpu_memory_training_loop_mb`
+- `runtime/gpu_peak_allocated_training_loop_mb`
+- `runtime/gpu_peak_reserved_training_loop_mb`
+- `runtime/gaussian_model_training_loop_mb`
 - `runtime/total_training_time_sec` as a final-step metric and in W&B summary at the end of training
+- `runtime/gpu_peak_allocated_final_mb` in the final-step log and W&B summary
+- `runtime/gpu_peak_reserved_final_mb` in the final-step log and W&B summary
+- `runtime/gaussian_model_final_mb` in the final-step log and W&B summary
 
 Current W&B eval logs include:
 
@@ -204,8 +213,8 @@ Split LoD timing:
 - `total_levels` means `len(resolution_scales)` for that experiment.
 - For base variants and all baselines, the runner keeps the default stage length of `5000`.
 - When an extension actually appends a new viewpoint block, the trainer restarts the LoD phase from the coarsest scale on the next iteration.
-- The sampler is then restricted to that new viewpoint block instead of the previously accumulated viewpoints.
-- Example: with `split2`, `final_extension_iteration = 7500`, and `resolution_scales = [2, 4, 8]`, the split run uses `splitter_itr = 7500`, `naive_lod_stage_iterations = 7500 // 3 = 2500`, so training promotes `8 -> 4 -> 2` by iteration `7500`, then the extension fires at iteration `7500`, and the next iteration restarts the new-viewpoint phase at scale `8`.
+- Sampling remains uniform over the full accumulated viewpoint set after extension.
+- Example: with `split2`, `final_extension_iteration = 7500`, and `resolution_scales = [2, 4, 8]`, the split run uses `splitter_itr = 7500`, `naive_lod_stage_iterations = 7500 // 3 = 2500`, so training promotes `8 -> 4 -> 2` by iteration `7500`, then the extension fires at iteration `7500`, and the next iteration restarts the new active block at scale `8` while previously promoted viewpoints continue rendering at the finest scale when sampled.
 
 Current runner matrix:
 
