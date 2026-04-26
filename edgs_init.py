@@ -34,6 +34,55 @@ class _TrainCameraScene:
         return list(self._train_cameras)
 
 
+def _camera_packet_sort_key(camera):
+    packet_metadata = getattr(camera, "packet_metadata", None) or {}
+    return (
+        packet_metadata.get("packet_index", float("inf")),
+        packet_metadata.get("camera_id", float("inf")),
+        packet_metadata.get("timestamp_sec", float("inf")),
+        camera.image_name,
+    )
+
+
+def _select_edgs_train_cameras(train_cameras, edgs_cfg):
+    train_cameras = list(train_cameras)
+    packet_set_size = getattr(edgs_cfg, "packet_window_size", 0)
+    packet_skip_frames = max(int(getattr(edgs_cfg, "skip_frames", 0) or 0), 0)
+    packet_max_frames = int(getattr(edgs_cfg, "max_frames", 0) or 0)
+    if packet_set_size is None or packet_set_size <= 0:
+        selected_cameras = train_cameras
+    else:
+        packet_cameras = [camera for camera in train_cameras if getattr(camera, "packet_metadata", None)]
+        if len(packet_cameras) < 2:
+            selected_cameras = train_cameras
+        else:
+            packet_cameras = sorted(packet_cameras, key=_camera_packet_sort_key)
+            target_count = max(int(packet_set_size), int(getattr(edgs_cfg, "nns_per_ref", 1)))
+            window_size = min(target_count, len(packet_cameras))
+            if window_size < 2:
+                selected_cameras = train_cameras
+            else:
+                window_anchor = getattr(edgs_cfg, "packet_window_anchor", "middle")
+                if window_anchor == "start":
+                    start_idx = 0
+                elif window_anchor == "end":
+                    start_idx = len(packet_cameras) - window_size
+                else:
+                    start_idx = max((len(packet_cameras) - window_size) // 2, 0)
+                end_idx = start_idx + window_size
+                selected_cameras = packet_cameras[start_idx:end_idx]
+
+    if packet_skip_frames > 0:
+        selected_cameras = selected_cameras[:: packet_skip_frames + 1]
+
+    if packet_max_frames > 0:
+        selected_cameras = selected_cameras[:packet_max_frames]
+
+    if len(selected_cameras) < 2:
+        return train_cameras
+    return selected_cameras
+
+
 def build_edgs_init_config(args):
     return SimpleNamespace(
         use=args.edgs_init,
@@ -45,6 +94,10 @@ def build_edgs_init_config(args):
         roma_model=args.edgs_roma_model,
         add_SfM_init=args.edgs_add_sfm_init,
         init_extensions=args.edgs_init_extensions,
+        packet_window_size=args.edgs_packet_window_size,
+        packet_window_anchor=args.edgs_packet_window_anchor,
+        skip_frames=args.edgs_skip_frames,
+        max_frames=args.edgs_max_frames,
     )
 
 
@@ -62,7 +115,11 @@ def apply_edgs_initialization(
         raise ValueError("EDGS initialization requires GaussianModel.training_setup(...) first.")
 
     corr_init = _load_corr_init_module()
-    scene_wrapper = _TrainCameraScene(train_cameras)
+    selected_train_cameras = _select_edgs_train_cameras(train_cameras, edgs_cfg)
+    if len(selected_train_cameras) < 2:
+        return False
+
+    scene_wrapper = _TrainCameraScene(selected_train_cameras)
     n_splats_at_init = len(gaussians._xyz)
 
     init_fn = (

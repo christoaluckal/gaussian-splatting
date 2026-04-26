@@ -9,8 +9,10 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import math
 import os
 import sys
+from collections import defaultdict
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -36,6 +38,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
+    packet_metadata: dict = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -111,7 +114,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
-                              width=width, height=height, is_test=image_name in test_cam_names_list)
+                              width=width, height=height, is_test=image_name in test_cam_names_list, packet_metadata=None)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
@@ -266,7 +269,7 @@ def readCamerasFromTransforms(path, transformsfile, depths_folder, white_backgro
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX,
                             image_path=image_path, image_name=image_name,
-                            width=image.size[0], height=image.size[1], depth_path=depth_path, depth_params=None, is_test=is_test))
+                            width=image.size[0], height=image.size[1], depth_path=depth_path, depth_params=None, is_test=is_test, packet_metadata=None))
             
     return cam_infos
 
@@ -309,7 +312,281 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
+
+def _quat_xyzw_to_rotmat(q_xyzw):
+    x, y, z, w = q_xyzw
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.array([
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ], dtype=np.float64)
+
+
+def _build_phase2_camera_info(packet, image_entry, camera_model, image_index, is_test):
+    width = int(image_entry["width"])
+    height = int(image_entry["height"])
+    fx, fy = camera_model["intrinsics"][:2]
+
+    body_to_world = packet["body_to_world"]
+    camera_to_body = camera_model["camera_to_body"]
+
+    R_ItoG = _quat_xyzw_to_rotmat(body_to_world["q_xyzw"])
+    p_IinG = np.asarray(body_to_world["p_xyz"], dtype=np.float64)
+    R_CtoI = _quat_xyzw_to_rotmat(camera_to_body["q_xyzw"])
+    p_CinI = np.asarray(camera_to_body["p_xyz"], dtype=np.float64)
+
+    R_CtoG = R_ItoG @ R_CtoI
+    p_CinG = R_ItoG @ p_CinI + p_IinG
+    R_GtoC = R_CtoG.T
+    T = -R_GtoC @ p_CinG
+
+    image_name = Path(image_entry["path"]).stem
+    image_path = os.path.join(packet["_root_path"], image_entry["path"])
+
+    return CameraInfo(
+        uid=image_index,
+        R=R_CtoG,
+        T=T,
+        FovY=focal2fov(fy, height),
+        FovX=focal2fov(fx, width),
+        depth_params=None,
+        image_path=image_path,
+        image_name=image_name,
+        depth_path="",
+        width=width,
+        height=height,
+        is_test=is_test,
+        packet_metadata={
+            "packet_index": packet["packet_index"],
+            "timestamp_sec": packet["timestamp_sec"],
+            "camera_id": image_entry["camera_id"],
+            "frame_id": packet["frame_id"],
+        },
+    )
+
+
+def _sample_phase2_color(image_cache, image_path, uv, width, height):
+    image = image_cache.get(image_path)
+    if image is None:
+        image = np.asarray(Image.open(image_path).convert("RGB"))
+        image_cache[image_path] = image
+
+    x = int(round(float(uv[0])))
+    y = int(round(float(uv[1])))
+    x = max(0, min(width - 1, x))
+    y = max(0, min(height - 1, y))
+    return image[y, x].astype(np.float32) / 255.0
+
+
+def _triangulate_track(observations):
+    if len(observations) < 2:
+        return None
+
+    best_angle = 0.0
+    for i in range(len(observations)):
+        for j in range(i + 1, len(observations)):
+            dot = float(np.clip(np.dot(observations[i]["ray_world"], observations[j]["ray_world"]), -1.0, 1.0))
+            angle = math.degrees(math.acos(dot))
+            best_angle = max(best_angle, angle)
+
+    if best_angle < 1.0:
+        return None
+
+    A = np.zeros((3, 3), dtype=np.float64)
+    b = np.zeros(3, dtype=np.float64)
+    identity = np.eye(3, dtype=np.float64)
+    for obs in observations:
+        direction = obs["ray_world"]
+        center = obs["camera_center"]
+        proj = identity - np.outer(direction, direction)
+        A += proj
+        b += proj @ center
+
+    try:
+        point = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        point, *_ = np.linalg.lstsq(A, b, rcond=None)
+
+    valid_observations = 0
+    total_error = 0.0
+    for obs in observations:
+        point_cam = obs["R_GtoC"] @ point + obs["T_GtoC"]
+        if point_cam[2] <= 1e-4:
+            continue
+        reproj = point_cam[:2] / point_cam[2]
+        total_error += float(np.linalg.norm(reproj - obs["uv_norm"]))
+        valid_observations += 1
+
+    if valid_observations < 2:
+        return None
+
+    mean_error = total_error / valid_observations
+    if mean_error > 0.02:
+        return None
+
+    return point
+
+
+def _build_phase2_seed_point_cloud(train_cam_infos, track_observations, fallback_depth_scale=0.5):
+    points = []
+    colors = []
+    image_cache = {}
+
+    for _, observations in track_observations.items():
+        point = _triangulate_track(observations)
+        if point is None:
+            continue
+        first_obs = observations[0]
+        color = _sample_phase2_color(
+            image_cache,
+            first_obs["image_path"],
+            first_obs["uv"],
+            first_obs["width"],
+            first_obs["height"],
+        )
+        points.append(point)
+        colors.append(color)
+
+    if not points:
+        fallback_points = []
+        fallback_colors = []
+        for cam_info in train_cam_infos[: min(len(train_cam_infos), 128)]:
+            Rt = np.eye(4, dtype=np.float64)
+            Rt[:3, :3] = cam_info.R.T
+            Rt[:3, 3] = cam_info.T
+            c2w = np.linalg.inv(Rt)
+            cam_center = c2w[:3, 3]
+            cam_forward = c2w[:3, 2]
+            fallback_points.append(cam_center + cam_forward * fallback_depth_scale)
+            fallback_colors.append(
+                _sample_phase2_color(
+                    image_cache,
+                    cam_info.image_path,
+                    np.array([cam_info.width / 2.0, cam_info.height / 2.0]),
+                    cam_info.width,
+                    cam_info.height,
+                )
+            )
+
+        points = fallback_points
+        colors = fallback_colors
+
+    points = np.asarray(points, dtype=np.float32)
+    colors = np.asarray(colors, dtype=np.float32)
+    normals = np.zeros_like(points, dtype=np.float32)
+    return BasicPointCloud(points=points, colors=colors, normals=normals)
+
+
+def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+    packets_path = os.path.join(path, "packets.jsonl")
+    if not os.path.exists(packets_path):
+        raise FileNotFoundError(f"Expected packet export at '{packets_path}'.")
+
+    packet_entries = []
+    skipped_packet_lines = 0
+    with open(packets_path, "r") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                packet = json.loads(line)
+            except json.JSONDecodeError:
+                skipped_packet_lines += 1
+                if skipped_packet_lines <= 5:
+                    print(
+                        f"[Phase2] Skipping malformed packet line {line_number} in "
+                        f"'{packets_path}'."
+                    )
+                continue
+            packet["_root_path"] = path
+            packet_entries.append(packet)
+
+    if not packet_entries:
+        raise RuntimeError(f"No packet entries found in '{packets_path}'.")
+
+    cam_infos = []
+    train_track_observations = defaultdict(list)
+    global_image_index = 0
+
+    for packet_index, packet in enumerate(packet_entries):
+        camera_models = {model["camera_id"]: model for model in packet["camera_models"]}
+        sparse_tracks_by_camera = defaultdict(list)
+        for sparse_track in packet.get("sparse_tracks", []):
+            sparse_tracks_by_camera[sparse_track["camera_id"]].append(sparse_track)
+
+        for image_entry in packet["images"]:
+            cam_id = image_entry["camera_id"]
+            camera_model = camera_models[cam_id]
+            is_test = bool(eval and llffhold and global_image_index % llffhold == 0)
+            cam_info = _build_phase2_camera_info(packet, image_entry, camera_model, global_image_index, is_test)
+            cam_infos.append(cam_info)
+
+            if not is_test or train_test_exp:
+                Rt = np.eye(4, dtype=np.float64)
+                Rt[:3, :3] = cam_info.R.T
+                Rt[:3, 3] = cam_info.T
+                c2w = np.linalg.inv(Rt)
+                camera_center = c2w[:3, 3]
+                R_CtoG = c2w[:3, :3]
+                R_GtoC = R_CtoG.T
+                T_GtoC = cam_info.T
+
+                for sparse_track in sparse_tracks_by_camera.get(cam_id, []):
+                    uv_norm = np.asarray(sparse_track["uv_norm"], dtype=np.float64)
+                    ray_camera = np.array([uv_norm[0], uv_norm[1], 1.0], dtype=np.float64)
+                    ray_camera /= np.linalg.norm(ray_camera)
+                    train_track_observations[sparse_track["feature_id"]].append({
+                        "camera_center": camera_center,
+                        "ray_world": R_CtoG @ ray_camera,
+                        "R_GtoC": R_GtoC,
+                        "T_GtoC": T_GtoC,
+                        "uv_norm": uv_norm,
+                        "uv": np.asarray(sparse_track["uv"], dtype=np.float64),
+                        "image_path": cam_info.image_path,
+                        "width": cam_info.width,
+                        "height": cam_info.height,
+                    })
+
+            global_image_index += 1
+
+    cam_infos = sorted(
+        cam_infos,
+        key=lambda x: (
+            ((x.packet_metadata or {}).get("packet_index", float("inf"))),
+            ((x.packet_metadata or {}).get("camera_id", float("inf"))),
+            ((x.packet_metadata or {}).get("timestamp_sec", float("inf"))),
+            x.image_name,
+        ),
+    )
+    train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
+    test_cam_infos = [c for c in cam_infos if c.is_test]
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    pcd = _build_phase2_seed_point_cloud(
+        train_cam_infos,
+        train_track_observations,
+        fallback_depth_scale=max(nerf_normalization["radius"] * 0.05, 0.25),
+    )
+
+    ply_path = os.path.join(path, "phase2_points3d.ply")
+    storePly(ply_path, pcd.points, np.clip(pcd.colors * 255.0, 0.0, 255.0).astype(np.uint8))
+    pcd = fetchPly(ply_path)
+
+    return SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        is_nerf_synthetic=False,
+    )
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "OpenVINSPackets": readOpenVINSPacketSceneInfo,
 }

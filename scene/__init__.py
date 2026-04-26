@@ -70,7 +70,16 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "sparse")):
+        if os.path.exists(os.path.join(args.source_path, "packets.jsonl")):
+            print("Found packets.jsonl, assuming Phase 2 OpenVINS packet export!")
+            scene_info = sceneLoadTypeCallbacks["OpenVINSPackets"](
+                args.source_path,
+                args.images,
+                args.depths,
+                args.eval,
+                args.train_test_exp,
+            )
+        elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")

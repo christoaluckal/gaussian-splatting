@@ -87,7 +87,7 @@ def loadCam(
                 invdepthmap = cv2.resize(invdepthmap, target_resolution, interpolation=cv2.INTER_LINEAR)
             resolution = target_resolution
 
-    return Camera(
+    camera = Camera(
         resolution,
         colmap_id=cam_info.uid,
         R=cam_info.R,
@@ -104,6 +104,8 @@ def loadCam(
         is_test_dataset=is_test_dataset,
         is_test_view=cam_info.is_test,
     )
+    camera.packet_metadata = cam_info.packet_metadata
+    return camera
 
 
 def cameraList_from_camInfos(

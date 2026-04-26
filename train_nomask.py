@@ -1304,6 +1304,31 @@ if __name__ == '__main__':
     parser.add_argument('--edgs_roma_model', type=str, default='outdoors')
     parser.add_argument('--edgs_add_sfm_init', action='store_true', default=False)
     parser.add_argument(
+        '--edgs_packet_window_size',
+        type=int,
+        default=0,
+        help='If > 0, restrict EDGS initialization to a contiguous packet window of this many packet-backed cameras.',
+    )
+    parser.add_argument(
+        '--edgs_packet_window_anchor',
+        type=str,
+        default='middle',
+        choices=['start', 'middle', 'end'],
+        help='Where to place the EDGS packet window when packet-backed cameras are available.',
+    )
+    parser.add_argument(
+        '--edgs_skip_frames',
+        type=int,
+        default=0,
+        help='For EDGS packet-backed input, keep every (skip_frames + 1)th frame after packet-window selection.',
+    )
+    parser.add_argument(
+        '--edgs_max_frames',
+        type=int,
+        default=0,
+        help='For EDGS packet-backed input, cap the selected EDGS frame set to this many frames after skipping; 0 disables the cap.',
+    )
+    parser.add_argument(
         '--edgs_init_extensions',
         action=argparse.BooleanOptionalAction,
         default=True,
