@@ -45,6 +45,55 @@ def _compute_resolution(args, orig_w, orig_h, resolution_scale):
     return (int(orig_w / scale), int(orig_h / scale))
 
 
+def _maybe_undistort_packet_image(image, cam_info):
+    packet_metadata = getattr(cam_info, "packet_metadata", None) or {}
+    if packet_metadata.get("camera_model") != "radtan":
+        return image
+
+    intrinsics = packet_metadata.get("intrinsics") or []
+    rectified_intrinsics = packet_metadata.get("rectified_intrinsics") or []
+    distortion_coeffs = packet_metadata.get("distortion_coeffs") or []
+    if len(intrinsics) < 4 or len(distortion_coeffs) < 4 or len(rectified_intrinsics) < 4:
+        return image
+
+    fx, fy, cx, cy = [float(value) for value in intrinsics[:4]]
+    new_fx, new_fy, new_cx, new_cy = [float(value) for value in rectified_intrinsics[:4]]
+    k1, k2, p1, p2 = [float(value) for value in distortion_coeffs[:4]]
+    camera_matrix = np.array(
+        [
+            [fx, 0.0, cx],
+            [0.0, fy, cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    new_camera_matrix = np.array(
+        [
+            [new_fx, 0.0, new_cx],
+            [0.0, new_fy, new_cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    distortion = np.array([k1, k2, p1, p2], dtype=np.float32)
+
+    undistorted = cv2.undistort(
+        np.asarray(image.convert("RGB")),
+        camera_matrix,
+        distortion,
+        newCameraMatrix=new_camera_matrix,
+    )
+    return Image.fromarray(undistorted, "RGB")
+
+
+def _maybe_flip_packet_image(image, args):
+    if getattr(args, "packet_flip_lr", False):
+        image = image.transpose(Image.FLIP_LEFT_RIGHT)
+    if getattr(args, "packet_flip_ud", False):
+        image = image.transpose(Image.FLIP_TOP_BOTTOM)
+    return image
+
+
 def loadCam(
     args,
     id,
@@ -55,6 +104,8 @@ def loadCam(
     reference_resolution_scale=None,
 ):
     image = Image.open(cam_info.image_path)
+    image = _maybe_undistort_packet_image(image, cam_info)
+    image = _maybe_flip_packet_image(image, args)
 
     if cam_info.depth_path != "":
         try:

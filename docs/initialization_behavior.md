@@ -33,9 +33,11 @@ The effective initialization behavior today is:
 - if `--edgs_init` is not set:
   - base scene: initialize from the input scene's COLMAP point cloud
   - split scene: initialize the first block from `model0`, and precompute extension blocks from sibling `model1`, `model2`, and so on
+  - packet scene: initialize from the packet loader's generated seed point cloud
 - if `--edgs_init` is set:
   - base scene: initialize from the point cloud, then run EDGS / RoMa correspondence initialization
   - split scene: initialize `model0` the same way, and optionally do the same for precomputed extension blocks
+  - packet scene: initialize from the generated packet seed, then run EDGS / RoMa correspondence initialization on the retained packet camera set
 
 ## Base-scene initialization path
 
@@ -56,6 +58,7 @@ Code seam:
 Inside `Scene.__init__(...)`:
 
 - the input source scene is read with the normal COLMAP / Blender loader
+- packet exports with `packets.jsonl` use the OpenVINS packet loader instead
 - train and test cameras are built for each configured resolution scale
 - when not resuming from checkpoint, `self.gaussians.create_from_pcd(...)` is called
 - when EDGS init is enabled, the scene then runs a local EDGS bridge after an initial `training_setup(...)`
@@ -63,6 +66,18 @@ Inside `Scene.__init__(...)`:
 That `create_from_pcd(...)` call is the actual initializer.
 
 When EDGS is enabled, it is the seed initializer, not the final initializer.
+
+For packet-backed scenes, the current seed point cloud comes from:
+
+- triangulated packet sparse tracks when enough multi-view geometry is available
+- otherwise, a deterministic forward-ray fallback over the retained packet camera set
+
+Current packet-specific preprocessing before initialization:
+
+- optional dataset-level packet subsampling through `--packet_stride` / `--packet_offset`
+- packet `radtan` image undistortion into a rectified pinhole model
+- optional packet image mirroring through `--packet_flip_lr` / `--packet_flip_ud`
+- rectified packet sparse-track rays for seed-cloud construction
 
 ## What `create_from_pcd(...)` sets
 

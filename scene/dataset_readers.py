@@ -15,6 +15,7 @@ import sys
 from collections import defaultdict
 from PIL import Image
 from typing import NamedTuple
+import cv2
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
@@ -325,10 +326,67 @@ def _quat_xyzw_to_rotmat(q_xyzw):
     ], dtype=np.float64)
 
 
+def _resolve_phase2_intrinsics(camera_model, width, height):
+    intrinsics = camera_model.get("intrinsics", [])
+    if len(intrinsics) < 4:
+        raise ValueError("Packet camera model is missing fx, fy, cx, cy intrinsics.")
+
+    fx, fy, cx, cy = [float(value) for value in intrinsics[:4]]
+    camera_matrix = np.array(
+        [
+            [fx, 0.0, cx],
+            [0.0, fy, cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    distortion_coeffs = camera_model.get("distortion_coeffs", [])
+    if camera_model.get("model") == "radtan" and len(distortion_coeffs) >= 4:
+        k1, k2, p1, p2 = [float(value) for value in distortion_coeffs[:4]]
+        distortion = np.array([k1, k2, p1, p2], dtype=np.float32)
+        new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
+            camera_matrix,
+            distortion,
+            (width, height),
+            0.0,
+            (width, height),
+        )
+    else:
+        distortion = None
+        new_camera_matrix = camera_matrix
+
+    return camera_matrix, distortion, new_camera_matrix
+
+
+def _flip_phase2_uv(uv, width, height, flip_lr=False, flip_ud=False):
+    u, v = float(uv[0]), float(uv[1])
+    if flip_lr:
+        u = (width - 1) - u
+    if flip_ud:
+        v = (height - 1) - v
+    return np.array([u, v], dtype=np.float64)
+
+
+def _phase2_uv_to_norm(uv, intrinsics):
+    fx, fy, cx, cy = [float(value) for value in intrinsics[:4]]
+    return np.array(
+        [
+            (float(uv[0]) - cx) / fx,
+            (float(uv[1]) - cy) / fy,
+        ],
+        dtype=np.float64,
+    )
+
+
 def _build_phase2_camera_info(packet, image_entry, camera_model, image_index, is_test):
     width = int(image_entry["width"])
     height = int(image_entry["height"])
-    fx, fy = camera_model["intrinsics"][:2]
+    _, _, new_camera_matrix = _resolve_phase2_intrinsics(camera_model, width, height)
+    fx = float(new_camera_matrix[0, 0])
+    fy = float(new_camera_matrix[1, 1])
+    cx = float(new_camera_matrix[0, 2])
+    cy = float(new_camera_matrix[1, 2])
 
     body_to_world = packet["body_to_world"]
     camera_to_body = camera_model["camera_to_body"]
@@ -364,6 +422,10 @@ def _build_phase2_camera_info(packet, image_entry, camera_model, image_index, is
             "timestamp_sec": packet["timestamp_sec"],
             "camera_id": image_entry["camera_id"],
             "frame_id": packet["frame_id"],
+            "camera_model": camera_model.get("model"),
+            "intrinsics": list(camera_model.get("intrinsics", [])),
+            "distortion_coeffs": list(camera_model.get("distortion_coeffs", [])),
+            "rectified_intrinsics": [fx, fy, cx, cy],
         },
     )
 
@@ -480,10 +542,24 @@ def _build_phase2_seed_point_cloud(train_cam_infos, track_observations, fallback
     return BasicPointCloud(points=points, colors=colors, normals=normals)
 
 
-def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+def readOpenVINSPacketSceneInfo(
+    path,
+    images,
+    depths,
+    eval,
+    train_test_exp,
+    llffhold=8,
+    packet_stride=1,
+    packet_offset=0,
+    packet_flip_lr=False,
+    packet_flip_ud=False,
+):
     packets_path = os.path.join(path, "packets.jsonl")
     if not os.path.exists(packets_path):
         raise FileNotFoundError(f"Expected packet export at '{packets_path}'.")
+
+    packet_stride = max(int(packet_stride or 1), 1)
+    packet_offset = max(int(packet_offset or 0), 0)
 
     packet_entries = []
     skipped_packet_lines = 0
@@ -503,16 +579,34 @@ def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llff
                     )
                 continue
             packet["_root_path"] = path
+            packet["_flip_lr"] = bool(packet_flip_lr)
+            packet["_flip_ud"] = bool(packet_flip_ud)
             packet_entries.append(packet)
 
     if not packet_entries:
         raise RuntimeError(f"No packet entries found in '{packets_path}'.")
 
+    if packet_stride > 1 or packet_offset > 0:
+        packet_entries = [
+            packet
+            for packet_index, packet in enumerate(packet_entries)
+            if packet_index >= packet_offset and (packet_index - packet_offset) % packet_stride == 0
+        ]
+        if not packet_entries:
+            raise RuntimeError(
+                "Packet subsampling removed every packet entry. "
+                f"stride={packet_stride}, offset={packet_offset}."
+            )
+        print(
+            f"[Phase2] Packet subsampling active: keeping {len(packet_entries)} packets "
+            f"with stride={packet_stride}, offset={packet_offset}."
+        )
+
     cam_infos = []
     train_track_observations = defaultdict(list)
     global_image_index = 0
 
-    for packet_index, packet in enumerate(packet_entries):
+    for packet in packet_entries:
         camera_models = {model["camera_id"]: model for model in packet["camera_models"]}
         sparse_tracks_by_camera = defaultdict(list)
         for sparse_track in packet.get("sparse_tracks", []):
@@ -521,6 +615,11 @@ def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llff
         for image_entry in packet["images"]:
             cam_id = image_entry["camera_id"]
             camera_model = camera_models[cam_id]
+            camera_matrix, distortion, new_camera_matrix = _resolve_phase2_intrinsics(
+                camera_model,
+                int(image_entry["width"]),
+                int(image_entry["height"]),
+            )
             is_test = bool(eval and llffhold and global_image_index % llffhold == 0)
             cam_info = _build_phase2_camera_info(packet, image_entry, camera_model, global_image_index, is_test)
             cam_infos.append(cam_info)
@@ -536,7 +635,34 @@ def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llff
                 T_GtoC = cam_info.T
 
                 for sparse_track in sparse_tracks_by_camera.get(cam_id, []):
+                    uv = np.asarray(sparse_track["uv"], dtype=np.float64)
                     uv_norm = np.asarray(sparse_track["uv_norm"], dtype=np.float64)
+                    if distortion is not None:
+                        undistorted_uv = cv2.undistortPoints(
+                            uv.reshape(1, 1, 2).astype(np.float32),
+                            camera_matrix,
+                            distortion,
+                            P=new_camera_matrix,
+                        ).reshape(2)
+                        undistorted_uv_norm = cv2.undistortPoints(
+                            uv.reshape(1, 1, 2).astype(np.float32),
+                            camera_matrix,
+                            distortion,
+                        ).reshape(2)
+                        uv = undistorted_uv.astype(np.float64)
+                        uv_norm = undistorted_uv_norm.astype(np.float64)
+                    if packet_flip_lr or packet_flip_ud:
+                        uv = _flip_phase2_uv(
+                            uv,
+                            cam_info.width,
+                            cam_info.height,
+                            flip_lr=packet_flip_lr,
+                            flip_ud=packet_flip_ud,
+                        )
+                        uv_norm = _phase2_uv_to_norm(
+                            uv,
+                            cam_info.packet_metadata["rectified_intrinsics"],
+                        )
                     ray_camera = np.array([uv_norm[0], uv_norm[1], 1.0], dtype=np.float64)
                     ray_camera /= np.linalg.norm(ray_camera)
                     train_track_observations[sparse_track["feature_id"]].append({
@@ -545,7 +671,7 @@ def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llff
                         "R_GtoC": R_GtoC,
                         "T_GtoC": T_GtoC,
                         "uv_norm": uv_norm,
-                        "uv": np.asarray(sparse_track["uv"], dtype=np.float64),
+                        "uv": uv,
                         "image_path": cam_info.image_path,
                         "width": cam_info.width,
                         "height": cam_info.height,
@@ -572,7 +698,10 @@ def readOpenVINSPacketSceneInfo(path, images, depths, eval, train_test_exp, llff
         fallback_depth_scale=max(nerf_normalization["radius"] * 0.05, 0.25),
     )
 
-    ply_path = os.path.join(path, "phase2_points3d.ply")
+    ply_name = "phase2_points3d.ply"
+    if packet_stride > 1 or packet_offset > 0:
+        ply_name = f"phase2_points3d_stride{packet_stride}_offset{packet_offset}.ply"
+    ply_path = os.path.join(path, ply_name)
     storePly(ply_path, pcd.points, np.clip(pcd.colors * 255.0, 0.0, 255.0).astype(np.uint8))
     pcd = fetchPly(ply_path)
 

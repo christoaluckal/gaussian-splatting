@@ -1138,6 +1138,12 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 
+def _resolve_wandb_name(args):
+    if args.wandb_name:
+        return args.wandb_name
+    return f"run-{str(uuid.uuid4())[:10]}"
+
+
 def training_report(
     tb_writer,
     iteration,
@@ -1343,7 +1349,12 @@ if __name__ == '__main__':
     parser.add_argument('--disable_wandb', action='store_true', default=False)
     parser.add_argument('--wandb_project', type=str, default='gaussian-splatting')
     parser.add_argument('--wandb_group', type=str, default=None)
-    parser.add_argument('--wandb_name', type=str, default='naive-lod')
+    parser.add_argument(
+        '--wandb_name',
+        type=str,
+        default=None,
+        help='Optional W&B run name. If omitted, a random name is generated for each launch.',
+    )
     args = parser.parse_args(sys.argv[1:])
 
     if args.test_iterations is None:
@@ -1368,10 +1379,13 @@ if __name__ == '__main__':
     fixed_wandb_eval_view = None
     wandb_context = nullcontext()
     if WANDB_FOUND and not args.disable_wandb:
+        resolved_wandb_name = _resolve_wandb_name(args)
+        args.wandb_name = resolved_wandb_name
+        print(f'W&B run name: {resolved_wandb_name}')
         wandb_context = wandb.init(
             project=args.wandb_project,
             group=args.wandb_group,
-            name=args.wandb_name,
+            name=resolved_wandb_name,
             resume='never',
             config=vars(args),
         )

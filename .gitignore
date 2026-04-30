@@ -15,5 +15,5 @@ jug
 *.jpg
 *.JPG
 cfg_args
-submodules
+*submodules/*
 wandb

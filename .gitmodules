@@ -5,9 +5,9 @@
 	path = submodules/diff-gaussian-rasterization
 	url = https://github.com/christoaluckal/diff-gaussian-rasterization.git
 	branch = main
-[submodule "SIBR_viewers"]
-	path = SIBR_viewers
-	url = https://gitlab.inria.fr/sibr/sibr_core.git
+#[submodule "SIBR_viewers"]
+#	path = SIBR_viewers
+#	url = https://gitlab.inria.fr/sibr/sibr_core.git
 [submodule "submodules/fused-ssim"]
 	path = submodules/fused-ssim
 	url = https://github.com/rahul-goel/fused-ssim.git

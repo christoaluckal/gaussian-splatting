@@ -36,6 +36,13 @@ For the comparison runner this means:
 
 `train_nomask.py` also logs `config=vars(args)` to W&B init, so each run records its exact CLI-derived configuration.
 
+Direct `train_nomask.py` launches now behave differently from older fixed-name runs:
+
+- `--wandb_project` still controls the target W&B project
+- `--wandb_group` still controls optional grouping
+- if `--wandb_name` is omitted, `train_nomask.py` generates a random run name on each launch
+- if `--wandb_name` is provided explicitly, that value is used unchanged
+
 ## W&B training metrics
 
 The active training loop logs these scalar keys each iteration:

@@ -9,6 +9,7 @@ Current documents:
 - `phase0_mapping_baseline.md`: freezes the mapper-side baseline for the OpenVINS roadmap and clarifies that split append is an internal precedent, not a required ROS input layout.
 - `phase2_packet_ingest_design.md`: describes the implemented packet-backed scene loader and fixed-pose Phase 2 mapper path.
 - `phase3_edgs_packet_port.md`: describes the packet-window EDGS initialization seam and the current fixed-set selection rule.
+- packet docs now also cover dataset-level packet subsampling, rectified packet-image loading, and optional packet image flips used by the active loader.
 - `handoff.md`: operational handoff covering validated behavior, machine requirements, and known portability limits.
 - `initialization_behavior.md`: describes the active initialization behavior in `frankenstein_base`, including the direct EDGS / RoMa bridge and split-block handling.
 - `logging_behavior.md`: describes the current W&B, CSV, and runtime logging surfaces, including EDGS init timing metrics.

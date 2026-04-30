@@ -78,6 +78,10 @@ class Scene:
                 args.depths,
                 args.eval,
                 args.train_test_exp,
+                packet_stride=args.packet_stride,
+                packet_offset=args.packet_offset,
+                packet_flip_lr=args.packet_flip_lr,
+                packet_flip_ud=args.packet_flip_ud,
             )
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
