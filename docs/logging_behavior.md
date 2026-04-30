@@ -103,6 +103,20 @@ At the end of training, the runtime logger records:
 
 Every run output directory currently writes three CSV files.
 
+## Iteration-0 Point Cloud
+
+Fresh runs also save the initialized Gaussian state before the first training step:
+
+- `point_cloud/iteration_0/point_cloud.ply`
+
+This file is not a metric log, but it is part of the debugging surface for packet and EDGS runs.
+
+Interpretation:
+
+- without EDGS, it shows the point-cloud seed converted into initial Gaussians
+- with EDGS, it shows the state after EDGS/RoMa append and before optimization
+- checkpoint resumes skip this save because the loaded checkpoint is not a fresh initialization
+
 ### `train_metrics.csv`
 
 Columns:

@@ -94,6 +94,8 @@ It also initializes exposure state for every camera in the loaded camera set.
 
 This is standard 3DGS-style initialization.
 
+If the CUDA `simple-knn` distance kernel fails during this initial scale estimation, the active code falls back to a chunked `torch.cdist` nearest-neighbor estimate. This has been observed on the packet port with a tiny seed cloud and is treated as a local extension/runtime compatibility issue rather than real model-size VRAM pressure.
+
 ## EDGS / RoMa initialization path
 
 `frankenstein_base` now wires EDGS initialization through [edgs_init.py](/home/christoa/Workspace/splatting/frankenstein/frankenstein_base/edgs_init.py).
@@ -123,6 +125,12 @@ So with `--edgs_init`, the actual order is:
 6. later, `train_nomask.py` calls `training_setup(opt)` again before the main loop starts
 
 That final reset is acceptable because initialization happens before training and no optimizer moments need to be preserved yet.
+
+Fresh runs save the initialized Gaussian state before the first optimizer step:
+
+- `point_cloud/iteration_0/point_cloud.ply`
+
+For EDGS runs, this file is the main artifact for checking whether bad geometry comes from initialization or from later training.
 
 ## Split-scene initialization path
 

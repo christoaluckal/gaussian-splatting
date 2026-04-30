@@ -319,11 +319,15 @@ def _quat_xyzw_to_rotmat(q_xyzw):
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
     wx, wy, wz = w * x, w * y, w * z
-    return np.array([
+    rotation = np.array([
         [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
         [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
         [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
     ], dtype=np.float64)
+    # OpenVINS exports quaternion coefficients from its internal convention.
+    # The standard xyzw expansion above gives the inverse of the labeled packet
+    # transform, so transpose once here and keep packet labels authoritative.
+    return rotation.T
 
 
 def _resolve_phase2_intrinsics(camera_model, width, height):
@@ -690,6 +694,10 @@ def readOpenVINSPacketSceneInfo(
     )
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]
+    print(
+        f"[Phase2] Loaded {len(packet_entries)} packets, "
+        f"{len(train_cam_infos)} train cameras, {len(test_cam_infos)} test cameras."
+    )
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
     pcd = _build_phase2_seed_point_cloud(
@@ -697,6 +705,7 @@ def readOpenVINSPacketSceneInfo(
         train_track_observations,
         fallback_depth_scale=max(nerf_normalization["radius"] * 0.05, 0.25),
     )
+    print(f"[Phase2] Seed point cloud contains {len(pcd.points)} points.")
 
     ply_name = "phase2_points3d.ply"
     if packet_stride > 1 or packet_offset > 0:

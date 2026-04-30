@@ -40,8 +40,14 @@ So a `1920x1080` image with `-r 8` and `resolution_scales=[8]` became roughly `3
 
 Current effective behavior is:
 
+- `resolution_scales=[1]` means full input image size
 - `resolution_scales=[2,4,8]` means `1/2`, `1/4`, and `1/8` of original size
 - W&B eval images reflect those resized camera tensors directly
+
+For visual-quality debugging, prefer a full-resolution direct run with
+`--resolution_scales 1`. A run at `resolution_scales=[8]` is useful for fast
+plumbing checks, but its eval render is only one eighth of the input width and
+height and will look blurry when inspected at larger display size.
 
 ## Active comparison matrix
 

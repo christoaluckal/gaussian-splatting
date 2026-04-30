@@ -49,10 +49,14 @@ def _select_edgs_train_cameras(train_cameras, edgs_cfg):
     packet_set_size = getattr(edgs_cfg, "packet_window_size", 0)
     packet_skip_frames = max(int(getattr(edgs_cfg, "skip_frames", 0) or 0), 0)
     packet_max_frames = int(getattr(edgs_cfg, "max_frames", 0) or 0)
+    packet_cameras = [camera for camera in train_cameras if getattr(camera, "packet_metadata", None)]
     if packet_set_size is None or packet_set_size <= 0:
-        selected_cameras = train_cameras
+        selected_cameras = (
+            sorted(packet_cameras, key=_camera_packet_sort_key)
+            if packet_cameras
+            else train_cameras
+        )
     else:
-        packet_cameras = [camera for camera in train_cameras if getattr(camera, "packet_metadata", None)]
         if len(packet_cameras) < 2:
             selected_cameras = train_cameras
         else:
@@ -81,6 +85,30 @@ def _select_edgs_train_cameras(train_cameras, edgs_cfg):
     if len(selected_cameras) < 2:
         return train_cameras
     return selected_cameras
+
+
+def _describe_edgs_camera_selection(selected_train_cameras, full_train_count):
+    packet_metadata = [
+        getattr(camera, "packet_metadata", None) or {}
+        for camera in selected_train_cameras
+        if getattr(camera, "packet_metadata", None)
+    ]
+    if not packet_metadata:
+        return f'{len(selected_train_cameras)}/{full_train_count} train cameras'
+
+    packet_indices = [metadata.get("packet_index") for metadata in packet_metadata]
+    timestamps = [metadata.get("timestamp_sec") for metadata in packet_metadata]
+    packet_indices = [index for index in packet_indices if index is not None]
+    timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
+    if not packet_indices or not timestamps:
+        return f'{len(selected_train_cameras)}/{full_train_count} packet-backed train cameras'
+
+    duration_sec = max(timestamps) - min(timestamps)
+    return (
+        f'{len(selected_train_cameras)}/{full_train_count} train cameras, '
+        f'packet range {min(packet_indices)}-{max(packet_indices)}, '
+        f'time span {duration_sec:.3f}s'
+    )
 
 
 def build_edgs_init_config(args):
@@ -118,6 +146,10 @@ def apply_edgs_initialization(
     selected_train_cameras = _select_edgs_train_cameras(train_cameras, edgs_cfg)
     if len(selected_train_cameras) < 2:
         return False
+    print(
+        '[EDGS init] Selected '
+        + _describe_edgs_camera_selection(selected_train_cameras, len(train_cameras))
+    )
 
     scene_wrapper = _TrainCameraScene(selected_train_cameras)
     n_splats_at_init = len(gaussians._xyz)

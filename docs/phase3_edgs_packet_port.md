@@ -32,6 +32,7 @@ New knobs:
 Current behavior:
 
 - if `edgs_packet_window_size <= 0`, EDGS sees the full training camera list
+- for packet-backed cameras, EDGS orders that list by packet metadata before applying skip/cap controls
 - if dataset-level packet subsampling is active through `--packet_stride` / `--packet_offset`, EDGS only sees that retained dataset subset
 - if `edgs_packet_window_size > 0` and packet metadata exists, EDGS sees only a fixed contiguous packet-frame set
 - the selected set size is `max(edgs_nns_per_ref, edgs_packet_window_size)`
@@ -43,6 +44,17 @@ Important distinction:
 
 - `--packet_stride` / `--packet_offset` change the whole packet dataset used by training, evaluation, the seed cloud, and EDGS
 - `--edgs_packet_window_size`, `--edgs_skip_frames`, and `--edgs_max_frames` only further restrict the camera set seen by EDGS initialization
+
+Known pitfall:
+
+- `Scene(...)` can shuffle training cameras
+- EDGS skip/cap controls must operate after packet metadata ordering, otherwise `--edgs_skip_frames 9` samples every tenth shuffled camera rather than every tenth packet
+- the active wrapper now sorts packet-backed cameras before applying those controls
+
+Runtime diagnostics:
+
+- EDGS initialization prints the selected camera count, packet range, and time span
+- this log should be checked for stride/window experiments before interpreting EDGS output quality
 
 ## Why This Is The Right First Step
 

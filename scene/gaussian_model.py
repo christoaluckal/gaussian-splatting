@@ -147,6 +147,33 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    def _initial_dist2_from_points(self, points):
+        try:
+            return distCUDA2(points)
+        except (RuntimeError, MemoryError) as exc:
+            print(
+                "[WARN] simple-knn distCUDA2 failed during initial scale "
+                f"estimation ({exc}). Falling back to torch.cdist."
+            )
+            torch.cuda.empty_cache()
+
+        point_count = points.shape[0]
+        if point_count <= 1:
+            return torch.ones((point_count,), dtype=points.dtype, device=points.device)
+
+        nearest_dist2 = torch.empty((point_count,), dtype=points.dtype, device=points.device)
+        chunk_size = 1024
+        for start in range(0, point_count, chunk_size):
+            end = min(start + chunk_size, point_count)
+            dist2_chunk = torch.cdist(points[start:end], points).pow(2)
+            rows = torch.arange(end - start, device=points.device)
+            cols = torch.arange(start, end, device=points.device)
+            dist2_chunk[rows, cols] = float("inf")
+            nearest_dist2[start:end] = dist2_chunk.min(dim=1).values
+            del dist2_chunk
+
+        return nearest_dist2
+
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
@@ -157,7 +184,7 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        dist2 = torch.clamp_min(self._initial_dist2_from_points(fused_point_cloud), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1

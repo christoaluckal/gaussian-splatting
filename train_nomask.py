@@ -119,15 +119,39 @@ def _prepare_resolution_scales(resolution_scales):
     if not unique_scales:
         raise ValueError('resolution_scales must contain at least one scale.')
 
-    allowed_scales = {2, 4, 8}
+    allowed_scales = {1, 2, 4, 8}
     invalid_scales = [scale for scale in unique_scales if scale not in allowed_scales]
     if invalid_scales:
         raise ValueError(
-            'resolution_scales must only contain values from [2, 4, 8]. '
+            'resolution_scales must only contain values from [1, 2, 4, 8]. '
             f'Received invalid scales: {invalid_scales}'
         )
 
     return unique_scales, list(reversed(unique_scales))
+
+
+def _log_loaded_resolution_summary(scene, resolution_scales, eval_scale):
+    train_summary = []
+    for scale in resolution_scales:
+        cameras = scene.getTrainCameras(scale=scale)
+        if cameras:
+            train_summary.append(
+                f'{scale}: {cameras[0].image_width}x{cameras[0].image_height}'
+            )
+
+    test_cameras = scene.getTestCameras(scale=eval_scale)
+    eval_summary = 'no test cameras'
+    if test_cameras:
+        eval_summary = f'{eval_scale}: {test_cameras[0].image_width}x{test_cameras[0].image_height}'
+
+    print('Loaded train camera resolutions by scale:', ', '.join(train_summary))
+    print('Loaded eval camera resolution:', eval_summary)
+    if eval_scale > 1:
+        print(
+            '[WARN] Evaluation and logged eval renders are downsampled by '
+            f'resolution scale {eval_scale}. Use `--resolution_scales 1` '
+            'for full-resolution visual inspection.'
+        )
 
 
 def _resolve_naive_lod_scale(
@@ -548,6 +572,9 @@ def training(
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+    elif 0 in saving_iterations:
+        print('\n[ITER 0] Saving initialized Gaussians')
+        scene.save(0)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device='cuda')
@@ -564,6 +591,7 @@ def training(
     )
 
     viewpoint_dict, viewpoint_indices = _build_viewpoint_stacks(scene, resolution_scales)
+    _log_loaded_resolution_summary(scene, resolution_scales, finest_scale)
     active_viewpoint_start_idx = 0
     total_viewpoint_count = len(viewpoint_dict[finest_scale])
     initial_scale_idx, initial_scale = _resolve_naive_lod_scale(
@@ -1288,7 +1316,7 @@ if __name__ == '__main__':
     parser.add_argument('--start_checkpoint', type=str, default=None)
     parser.add_argument('--pkl_name', type=str, default='')
     parser.add_argument('--default', action='store_true')
-    parser.add_argument('--resolution_scales', nargs='+', type=int, default=[2])
+    parser.add_argument('--resolution_scales', nargs='+', type=int, default=[1])
     parser.add_argument('--naive_lod_stage_iterations', type=int, default=5000)
     parser.add_argument(
         '--densify',
@@ -1364,6 +1392,8 @@ if __name__ == '__main__':
     args.save_iterations = list(args.save_iterations)
     if args.iterations not in args.test_iterations:
         args.test_iterations.append(args.iterations)
+    if 0 not in args.save_iterations:
+        args.save_iterations.insert(0, 0)
     if args.iterations not in args.save_iterations:
         args.save_iterations.append(args.iterations)
 

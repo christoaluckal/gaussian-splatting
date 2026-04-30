@@ -28,6 +28,7 @@ The packet loader in `scene/dataset_readers.py` does the following:
 5. computes camera poses from:
    - `body_to_world`
    - `camera_to_body`
+   - OpenVINS packet quaternions are transposed after matrix expansion so these labeled transform directions are preserved in the mapper
 6. resolves a rectified pinhole camera model from the exported packet calibration
 7. uses rectified intrinsics for FoV derivation and sparse-track rays
 8. optionally mirrors packet images and packet sparse-track coordinates through:
@@ -67,6 +68,18 @@ Current packet-image handling:
 - packet `radtan` images are undistorted on load
 - the packet sparse-track pixels are rectified into the same pinhole camera model before ray construction
 - optional packet flips are applied consistently to both images and packet sparse-track coordinates
+
+Transform validation note:
+
+- the transpose in `_quat_xyzw_to_rotmat(...)` is intentional
+- sparse-track reprojection validation on `bags/rpng_packets2` improved from roughly `0.17` median normalized error to roughly `0.002` after applying that convention
+- if OpenVINS packet export changes, this validation should be repeated before trusting packet seed or EDGS geometry
+
+Projection limitation:
+
+- the current renderer camera path derives FoV from rectified intrinsics
+- principal-point offsets are not explicitly represented in the 3DGS projection matrix
+- if transforms are correct but quality still plateaus, this calibration approximation is a likely next issue
 
 ## Usage
 

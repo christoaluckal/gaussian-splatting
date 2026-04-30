@@ -61,6 +61,7 @@ class ModelParams(ParamGroup):
         self.packet_offset = 0
         self.packet_flip_lr = False
         self.packet_flip_ud = False
+        self.match_resolution = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
