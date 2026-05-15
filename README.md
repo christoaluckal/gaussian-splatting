@@ -97,6 +97,51 @@ Current comparison-runner additions also include:
 - shared `--wandb_project` and `--wandb_group` wiring across all runner-launched jobs
 - EDGS-only compatibility training mode applied per job inside the comparison matrix
 
+### TartanAir LoD and densification sweep
+
+`run_tartanair_lod_sweep.py` is a standalone launcher for the OpenVINS/TartanAir packet dataset. It does not replace `run_exp.py`.
+
+Default behavior:
+
+- source dataset: `../bags/tartanair_packets`
+- baseline runs: `--resolution_scales 2`
+- LoD runs: `--resolution_scales 2 4 8`
+- densify grad thresholds: 4 linear steps from `2e-4` to `1e-3`
+- total training iterations: `50000`
+- LoD/densify schedules:
+  - `5000:18334`
+  - `6667:23334`
+  - `8334:28334`
+- every schedule satisfies `3 * naive_lod_stage_iterations + post_lod_densify_margin < densify_until_iter`
+- the default post-LoD densify margin is `1667` iterations
+- every hyperparameter combination launches a complementary `baseline` and `lod` run
+- W&B names and output folders include the variant, scales, grad threshold, LoD stage length, and densify-until iteration
+
+Inspect the launch matrix without running training:
+
+```bash
+python run_tartanair_lod_sweep.py --dry-run
+```
+
+Run the default 24-job sweep:
+
+```bash
+python run_tartanair_lod_sweep.py
+```
+
+Override the schedule or output root:
+
+```bash
+python run_tartanair_lod_sweep.py \
+  --source ../bags/tartanair_packets \
+  --output-root output/tartan_lod_sweep \
+  --iterations 50000 \
+  --schedules 5000:18334,6667:23334,8334:28334 \
+  --post-lod-densify-margin 1667 \
+  --wandb_project openvins \
+  --wandb_group tartan-lod-densify-sweep
+```
+
 ### Example
 
 ```bash

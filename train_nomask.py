@@ -229,6 +229,20 @@ def _get_gpu_memory_mb():
     return torch.cuda.memory_reserved(device) / bytes_per_mb
 
 
+def _get_gpu_peak_memory_mb():
+    if not torch.cuda.is_available():
+        return 0.0
+
+    device = torch.cuda.current_device()
+    bytes_per_mb = 1024.0 * 1024.0
+    return torch.cuda.max_memory_reserved(device) / bytes_per_mb
+
+
+def _reset_gpu_peak_memory_stats():
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
+
+
 def _synchronize_cuda():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -541,6 +555,7 @@ def training(
     scene_load_start_time = time.perf_counter()
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     initialization_start_time = time.perf_counter()
+    _reset_gpu_peak_memory_stats()
     scene_edgs_init_cfg = edgs_init_cfg
     # EDGS initializes the base block after Scene(...) and training_setup(...),
     # not during scene construction.
@@ -557,7 +572,11 @@ def training(
     )
     initialization_time_sec = time.perf_counter() - initialization_start_time
     gaussians.training_setup(opt)
+    _synchronize_cuda()
+    post_scene_init_gpu_memory_mb = _get_gpu_memory_mb()
+    post_scene_init_peak_gpu_memory_mb = _get_gpu_peak_memory_mb()
     if edgs_train_recipe and def_flag and edgs_init_cfg is not None and edgs_init_cfg.use:
+        _reset_gpu_peak_memory_stats()
         _synchronize_cuda()
         edgs_base_init_start_time = time.perf_counter()
         apply_edgs_initialization(
@@ -569,12 +588,16 @@ def training(
         _synchronize_cuda()
         scene.runtime_stats['edgs_base_init_time_sec'] += time.perf_counter() - edgs_base_init_start_time
         scene.runtime_stats['edgs_base_init_gpu_memory_mb'] = _get_gpu_memory_mb()
+        scene.runtime_stats['edgs_base_init_peak_gpu_memory_mb'] = _get_gpu_peak_memory_mb()
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
     elif 0 in saving_iterations:
         print('\n[ITER 0] Saving initialized Gaussians')
         scene.save(0)
+    _synchronize_cuda()
+    post_init_gpu_memory_mb = _get_gpu_memory_mb()
+    post_init_peak_gpu_memory_mb = max(post_scene_init_peak_gpu_memory_mb, _get_gpu_peak_memory_mb())
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device='cuda')
@@ -624,8 +647,10 @@ def training(
     scene_load_gpu_memory_mb = _get_gpu_memory_mb()
     edgs_base_init_time_sec = scene.runtime_stats.get('edgs_base_init_time_sec', 0.0)
     edgs_base_init_gpu_memory_mb = scene.runtime_stats.get('edgs_base_init_gpu_memory_mb', 0.0)
+    edgs_base_init_peak_gpu_memory_mb = scene.runtime_stats.get('edgs_base_init_peak_gpu_memory_mb', edgs_base_init_gpu_memory_mb)
     edgs_extensions_init_time_sec = scene.runtime_stats.get('edgs_extensions_init_time_sec', 0.0)
     edgs_extensions_init_gpu_memory_mb = scene.runtime_stats.get('edgs_extensions_init_gpu_memory_mb', 0.0)
+    edgs_extensions_init_peak_gpu_memory_mb = scene.runtime_stats.get('edgs_extensions_init_peak_gpu_memory_mb', edgs_extensions_init_gpu_memory_mb)
     edgs_extensions_init_count = scene.runtime_stats.get('edgs_extensions_init_count', 0)
     edgs_total_init_time_sec = edgs_base_init_time_sec + edgs_extensions_init_time_sec
     _append_csv_row(
@@ -636,6 +661,30 @@ def training(
             'iteration': 0,
             'gpu_memory_mb': '',
             'init_time_sec': initialization_time_sec,
+            'scene_load_time_sec': '',
+            'total_training_time_sec': '',
+        },
+    )
+    _append_csv_row(
+        runtime_metrics_csv,
+        runtime_csv_fields,
+        {
+            'event': 'post_scene_init',
+            'iteration': 0,
+            'gpu_memory_mb': post_scene_init_gpu_memory_mb,
+            'init_time_sec': '',
+            'scene_load_time_sec': '',
+            'total_training_time_sec': '',
+        },
+    )
+    _append_csv_row(
+        runtime_metrics_csv,
+        runtime_csv_fields,
+        {
+            'event': 'post_scene_init_peak',
+            'iteration': 0,
+            'gpu_memory_mb': post_scene_init_peak_gpu_memory_mb,
+            'init_time_sec': '',
             'scene_load_time_sec': '',
             'total_training_time_sec': '',
         },
@@ -653,6 +702,18 @@ def training(
                 'total_training_time_sec': '',
             },
         )
+        _append_csv_row(
+            runtime_metrics_csv,
+            runtime_csv_fields,
+            {
+                'event': 'edgs_base_init_peak',
+                'iteration': 0,
+                'gpu_memory_mb': edgs_base_init_peak_gpu_memory_mb,
+                'init_time_sec': '',
+                'scene_load_time_sec': '',
+                'total_training_time_sec': '',
+            },
+        )
     if edgs_extensions_init_count > 0:
         _append_csv_row(
             runtime_metrics_csv,
@@ -666,6 +727,42 @@ def training(
                 'total_training_time_sec': '',
             },
         )
+        _append_csv_row(
+            runtime_metrics_csv,
+            runtime_csv_fields,
+            {
+                'event': 'edgs_extensions_init_peak',
+                'iteration': 0,
+                'gpu_memory_mb': edgs_extensions_init_peak_gpu_memory_mb,
+                'init_time_sec': '',
+                'scene_load_time_sec': '',
+                'total_training_time_sec': '',
+            },
+        )
+    _append_csv_row(
+        runtime_metrics_csv,
+        runtime_csv_fields,
+        {
+            'event': 'post_initialization',
+            'iteration': 0,
+            'gpu_memory_mb': post_init_gpu_memory_mb,
+            'init_time_sec': '',
+            'scene_load_time_sec': '',
+            'total_training_time_sec': '',
+        },
+    )
+    _append_csv_row(
+        runtime_metrics_csv,
+        runtime_csv_fields,
+        {
+            'event': 'post_initialization_peak',
+            'iteration': 0,
+            'gpu_memory_mb': post_init_peak_gpu_memory_mb,
+            'init_time_sec': '',
+            'scene_load_time_sec': '',
+            'total_training_time_sec': '',
+        },
+    )
     _append_csv_row(
         runtime_metrics_csv,
         runtime_csv_fields,
@@ -680,11 +777,14 @@ def training(
     )
     if tb_writer:
         tb_writer.add_scalar('runtime/init_time_sec', initialization_time_sec, 0)
+        tb_writer.add_scalar('runtime/post_initialization_gpu_memory_mb', post_init_gpu_memory_mb, 0)
+        tb_writer.add_scalar('runtime/post_initialization_peak_gpu_memory_mb', post_init_peak_gpu_memory_mb, 0)
         tb_writer.add_scalar('runtime/gpu_memory_scene_load_mb', scene_load_gpu_memory_mb, 0)
         tb_writer.add_scalar('runtime/scene_load_time_sec', scene_load_time_sec, 0)
         if edgs_base_init_time_sec > 0.0:
             tb_writer.add_scalar('runtime/edgs_base_init_time_sec', edgs_base_init_time_sec, 0)
             tb_writer.add_scalar('runtime/edgs_base_init_gpu_memory_mb', edgs_base_init_gpu_memory_mb, 0)
+            tb_writer.add_scalar('runtime/edgs_base_init_peak_gpu_memory_mb', edgs_base_init_peak_gpu_memory_mb, 0)
         if edgs_extensions_init_count > 0:
             tb_writer.add_scalar('runtime/edgs_extensions_init_time_sec', edgs_extensions_init_time_sec, 0)
             tb_writer.add_scalar('runtime/edgs_extensions_init_gpu_memory_mb', edgs_extensions_init_gpu_memory_mb, 0)
@@ -694,12 +794,15 @@ def training(
     if WANDB_FOUND and wandb.run is not None:
         runtime_log = {
             'runtime/init_time_sec': initialization_time_sec,
+            'runtime/post_initialization_gpu_memory_mb': post_init_gpu_memory_mb,
+            'runtime/post_initialization_peak_gpu_memory_mb': post_init_peak_gpu_memory_mb,
             'runtime/gpu_memory_scene_load_mb': scene_load_gpu_memory_mb,
             'runtime/scene_load_time_sec': scene_load_time_sec,
         }
         if edgs_base_init_time_sec > 0.0:
             runtime_log['runtime/edgs_base_init_time_sec'] = edgs_base_init_time_sec
             runtime_log['runtime/edgs_base_init_gpu_memory_mb'] = edgs_base_init_gpu_memory_mb
+            runtime_log['runtime/edgs_base_init_peak_gpu_memory_mb'] = edgs_base_init_peak_gpu_memory_mb
         if edgs_extensions_init_count > 0:
             runtime_log['runtime/edgs_extensions_init_time_sec'] = edgs_extensions_init_time_sec
             runtime_log['runtime/edgs_extensions_init_gpu_memory_mb'] = edgs_extensions_init_gpu_memory_mb

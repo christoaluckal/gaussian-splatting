@@ -52,8 +52,10 @@ class Scene:
         self.runtime_stats = {
             'edgs_base_init_time_sec': 0.0,
             'edgs_base_init_gpu_memory_mb': 0.0,
+            'edgs_base_init_peak_gpu_memory_mb': 0.0,
             'edgs_extensions_init_time_sec': 0.0,
             'edgs_extensions_init_gpu_memory_mb': 0.0,
+            'edgs_extensions_init_peak_gpu_memory_mb': 0.0,
             'edgs_extensions_init_count': 0,
         }
 
@@ -182,6 +184,14 @@ class Scene:
         bytes_per_mb = 1024.0 * 1024.0
         return torch.cuda.memory_reserved(device) / bytes_per_mb
 
+    def _get_gpu_peak_memory_mb(self):
+        if not torch.cuda.is_available():
+            return 0.0
+
+        device = torch.cuda.current_device()
+        bytes_per_mb = 1024.0 * 1024.0
+        return torch.cuda.max_memory_reserved(device) / bytes_per_mb
+
     def _apply_timed_edgs_initialization(self, gaussians, train_cameras, phase):
         self._synchronize_cuda()
         start_time = time.perf_counter()
@@ -194,17 +204,23 @@ class Scene:
         self._synchronize_cuda()
         elapsed_time_sec = time.perf_counter() - start_time
         gpu_memory_mb = self._get_gpu_memory_mb()
+        peak_gpu_memory_mb = self._get_gpu_peak_memory_mb()
         if not applied:
             return False
 
         if phase == 'base':
             self.runtime_stats['edgs_base_init_time_sec'] += elapsed_time_sec
             self.runtime_stats['edgs_base_init_gpu_memory_mb'] = gpu_memory_mb
+            self.runtime_stats['edgs_base_init_peak_gpu_memory_mb'] = peak_gpu_memory_mb
         elif phase == 'extension':
             self.runtime_stats['edgs_extensions_init_time_sec'] += elapsed_time_sec
             self.runtime_stats['edgs_extensions_init_gpu_memory_mb'] = max(
                 self.runtime_stats['edgs_extensions_init_gpu_memory_mb'],
                 gpu_memory_mb,
+            )
+            self.runtime_stats['edgs_extensions_init_peak_gpu_memory_mb'] = max(
+                self.runtime_stats['edgs_extensions_init_peak_gpu_memory_mb'],
+                peak_gpu_memory_mb,
             )
             self.runtime_stats['edgs_extensions_init_count'] += 1
         else:

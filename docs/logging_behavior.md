@@ -79,6 +79,8 @@ The fixed evaluation view is chosen once from the middle of the current test cam
 At `step=0`, the runtime logger writes scene setup and initialization metrics:
 
 - `runtime/init_time_sec`: wall-clock time spent in the initialization section around `Scene(...)`
+- `runtime/post_initialization_gpu_memory_mb`: reserved GPU memory after scene construction, optional EDGS initialization, and optional iteration-0 save
+- `runtime/post_initialization_peak_gpu_memory_mb`: maximum reserved GPU memory observed from scene construction through optional EDGS initialization and optional iteration-0 save
 - `runtime/gpu_memory_scene_load_mb`: reserved GPU memory after scene load metrics are captured
 - `runtime/scene_load_time_sec`: wall-clock time from scene-load start until the full scene setup phase completes
 
@@ -86,6 +88,7 @@ When EDGS initialization is active, the same runtime log now also includes:
 
 - `runtime/edgs_base_init_time_sec`: wall-clock time spent on base-block EDGS initialization
 - `runtime/edgs_base_init_gpu_memory_mb`: reserved GPU memory measured after base-block EDGS initialization
+- `runtime/edgs_base_init_peak_gpu_memory_mb`: maximum reserved GPU memory observed during base-block EDGS initialization
 - `runtime/edgs_extensions_init_time_sec`: total wall-clock time spent initializing split extension blocks with EDGS
 - `runtime/edgs_extensions_init_gpu_memory_mb`: maximum reserved GPU memory observed across extension-block EDGS initialization
 - `runtime/edgs_extensions_init_count`: number of extension blocks initialized through EDGS
@@ -167,9 +170,15 @@ This file is event-oriented rather than iteration-oriented.
 Currently observed event names include:
 
 - `initialization`
+- `post_scene_init`
+- `post_scene_init_peak`
 - `scene_load`
 - `edgs_base_init`
+- `edgs_base_init_peak`
 - `edgs_extensions_init`
+- `edgs_extensions_init_peak`
+- `post_initialization`
+- `post_initialization_peak`
 - `training_loop`
 - `iteration`
 - `training_complete`
@@ -177,12 +186,37 @@ Currently observed event names include:
 Interpretation:
 
 - `initialization` stores `init_time_sec`
+- `post_scene_init` stores reserved GPU memory after scene construction and Gaussian optimizer setup
+- `post_scene_init_peak` stores the peak reserved GPU memory seen through scene construction
 - `scene_load` stores `scene_load_time_sec` and scene-load GPU memory
 - `edgs_base_init` stores base-block EDGS init time and GPU memory when EDGS is active
+- `edgs_base_init_peak` stores base-block EDGS peak GPU memory when EDGS is active
 - `edgs_extensions_init` stores total split-extension EDGS init time and GPU memory when extension EDGS init is active
+- `edgs_extensions_init_peak` stores split-extension EDGS peak GPU memory when extension EDGS init is active
+- `post_initialization` stores reserved GPU memory after initialization and iteration-0 save
+- `post_initialization_peak` stores the post-init max GPU memory used by cost reports
 - `training_loop` stores the first recorded training-loop GPU memory checkpoint
 - `iteration` stores per-iteration GPU memory snapshots
 - `training_complete` stores final total training time
+
+## Collated report
+
+The local report generator is:
+
+```bash
+python3 scripts/collate_run_metrics.py \
+  --output_root output \
+  --summary_csv output/collated_summary.csv \
+  --report_md output/cost_analysis.md
+```
+
+The generated Markdown report includes `Post Init Max GPU (MB)`, which is sourced from the `post_initialization_peak` row in `runtime_metrics.csv`.
+
+For short ad hoc run names such as `rpng_2` and `rpng_248`, the collator does not rely only on the directory name. It also infers:
+
+- scene name from `cfg_args.source_path`
+- EDGS initialization from nonzero `edgs_base_init` or `edgs_extensions_init` timing
+- LoD mode from the observed `lod_scale` values in `train_metrics.csv`
 
 ## Split-scene EDGS timing semantics
 

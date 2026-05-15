@@ -189,12 +189,15 @@ Files:
 
 - `scene/__init__.py`
 - `train_nomask.py`
+- `scripts/collate_run_metrics.py`
 
 Fix:
 
 - base-block EDGS init timing is measured and logged
 - split-extension EDGS init timing is measured and logged
 - EDGS init GPU memory usage is logged alongside the existing runtime metrics
+- post-initialization peak GPU memory is logged and appears in the Markdown report as `Post Init Max GPU (MB)`
+- the report collator infers EDGS and LoD mode from runtime/train CSVs when short run directory names do not encode the experiment type
 
 ## Current non-self-contained dependencies
 

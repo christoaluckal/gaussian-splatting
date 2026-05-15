@@ -22,10 +22,12 @@ parser.add_argument("--source_path", "-s", required=True, type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
-parser.add_argument("--magick_executable", default="", type=str)
+parser.add_argument("--convert_executable", default="", type=str)
+parser.add_argument("--magick_executable", default="", type=str, help="Deprecated alias for --convert_executable.")
 args = parser.parse_args()
 colmap_command = '"{}"'.format(args.colmap_executable) if len(args.colmap_executable) > 0 else "colmap"
-magick_command = '"{}"'.format(args.magick_executable) if len(args.magick_executable) > 0 else "magick"
+convert_executable = args.convert_executable or args.magick_executable
+convert_command = '"{}"'.format(convert_executable) if len(convert_executable) > 0 else "convert"
 use_gpu = 1 if not args.no_gpu else 0
 
 if not args.skip_matching:
@@ -87,6 +89,18 @@ for file in files:
     destination_file = os.path.join(args.source_path, "sparse", "0", file)
     shutil.move(source_file, destination_file)
 
+### Export text-format COLMAP model for colmap_splitter tools.
+sparse_txt_path = os.path.join(args.source_path, "sparse_txt")
+os.makedirs(sparse_txt_path, exist_ok=True)
+model_converter_cmd = (colmap_command + " model_converter \
+    --input_path " + args.source_path + "/sparse/0 \
+    --output_path " + sparse_txt_path + "\
+    --output_type TXT")
+exit_code = os.system(model_converter_cmd)
+if exit_code != 0:
+    logging.error(f"COLMAP TXT model export failed with code {exit_code}. Exiting.")
+    exit(exit_code)
+
 if(args.resize):
     print("Copying and resizing...")
 
@@ -102,21 +116,21 @@ if(args.resize):
 
         destination_file = os.path.join(args.source_path, "images_2", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 50% " + destination_file)
+        exit_code = os.system(convert_command + " " + destination_file + " -resize 50% " + destination_file)
         if exit_code != 0:
             logging.error(f"50% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)
 
         destination_file = os.path.join(args.source_path, "images_4", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 25% " + destination_file)
+        exit_code = os.system(convert_command + " " + destination_file + " -resize 25% " + destination_file)
         if exit_code != 0:
             logging.error(f"25% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)
 
         destination_file = os.path.join(args.source_path, "images_8", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 12.5% " + destination_file)
+        exit_code = os.system(convert_command + " " + destination_file + " -resize 12.5% " + destination_file)
         if exit_code != 0:
             logging.error(f"12.5% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)

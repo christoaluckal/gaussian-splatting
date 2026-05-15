@@ -14,6 +14,7 @@ Current documents:
 - `handoff.md`: operational handoff covering validated behavior, machine requirements, and known portability limits.
 - `initialization_behavior.md`: describes the active initialization behavior in `frankenstein_base`, including the direct EDGS / RoMa bridge and split-block handling.
 - `logging_behavior.md`: describes the current W&B, CSV, and runtime logging surfaces, including EDGS init timing metrics.
+- `experiment_reporting.md`: describes the local collated CSV/Markdown report, including EDGS/LoD inference for short run names and the post-init max GPU metric.
 - `edgs_pipeline_notes.md`: summarizes how EDGS launches experiments and performs RoMa-based Gaussian initialization.
 - `roma_integration_plan.md`: initial integration plan for bringing EDGS-style RoMa initialization into `frankenstein_base`.
 - `frankenstein_base_access_plan.md`: file ownership and dependency plan for making the integration self-contained inside `frankenstein_base`.
