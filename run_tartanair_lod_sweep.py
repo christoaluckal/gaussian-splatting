@@ -14,9 +14,9 @@ DEFAULT_SOURCE = "../bags/tartanair_packets"
 DEFAULT_OUTPUT_ROOT = "output/tartan_lod_sweep"
 DEFAULT_WANDB_PROJECT = "openvins-home"
 DEFAULT_WANDB_GROUP = "tartan-lod-densify-sweep"
-DEFAULT_ITERATIONS = 50000
-DEFAULT_POST_LOD_DENSIFY_MARGIN = 1667
-DEFAULT_SCHEDULES = [(10000,35000)]
+DEFAULT_ITERATIONS = 30000
+DEFAULT_POST_LOD_DENSIFY_MARGIN = 1000
+DEFAULT_SCHEDULES = [(5000,15000),(10000,15000)]
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -59,7 +59,7 @@ def validate_schedules(schedules: list[tuple[int, int]], iterations: int, post_l
             raise ValueError("naive_lod_stage_iterations must be positive")
         if densify_until_iter <= 0:
             raise ValueError("densify_until_iter must be positive")
-        min_densify_until_iter = 3 * naive_lod_stage_iterations + post_lod_densify_margin
+        min_densify_until_iter = 1 * naive_lod_stage_iterations + post_lod_densify_margin
         if min_densify_until_iter >= densify_until_iter:
             raise ValueError(
                 "schedule violates "
@@ -176,7 +176,7 @@ def main() -> None:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--train-script", default="train_nomask.py")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
-    parser.add_argument("--grad-start", type=float, default=2e-4)
+    parser.add_argument("--grad-start", type=float, default=1e-4)
     parser.add_argument("--grad-end", type=float, default=1e-3)
     parser.add_argument("--grad-steps", type=int, default=4)
     parser.add_argument(
@@ -200,7 +200,7 @@ def main() -> None:
     parser.add_argument("--lod-resolution-scales", type=parse_int_list, default=[2, 4, 8])
     parser.add_argument("--wandb_project", default=DEFAULT_WANDB_PROJECT)
     parser.add_argument("--wandb_group", default=DEFAULT_WANDB_GROUP)
-    parser.add_argument("--edgs_matches_per_ref", type=int, default=500)
+    parser.add_argument("--edgs_matches_per_ref", type=int, default=200)
     parser.add_argument("--edgs_num_refs", type=int, default=500)
     parser.add_argument("--edgs_proj_err_tolerance", type=float, default=0.01)
     parser.add_argument("--edgs_roma_model", default="outdoors")
