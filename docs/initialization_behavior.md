@@ -32,11 +32,11 @@ The effective initialization behavior today is:
 
 - if `--edgs_init` is not set:
   - base scene: initialize from the input scene's COLMAP point cloud
-  - split scene: initialize the first block from `model0`, and precompute extension blocks from sibling `model1`, `model2`, and so on
+  - split scene: initialize the first block from `model0`, and precompute extension blocks either from sibling `model1`, `model2`, and so on or from a dynamic viewpoint splitter over one camera set
   - packet scene: initialize from the packet loader's generated seed point cloud
 - if `--edgs_init` is set:
   - base scene: initialize from the point cloud, then run EDGS / RoMa correspondence initialization
-  - split scene: initialize `model0` the same way, and optionally do the same for precomputed extension blocks
+  - split scene: initialize `model0` the same way, and optionally do the same for precomputed extension blocks whether those blocks came from sibling folders or from a dynamic viewpoint partitioner
   - packet scene: initialize from the generated packet seed, then run EDGS / RoMa correspondence initialization on the retained packet camera set
 
 ## Base-scene initialization path
@@ -139,12 +139,49 @@ When `xtend > 0`, `Scene.__init__(...)` prepares additional Gaussian blocks in a
 Current behavior:
 
 - `model0` is loaded from the source path passed to training
-- sibling directories `model1`, `model2`, ... are searched under the same parent directory
-- each sibling block gets its own camera lists and its own GaussianModel initialized from that block's point cloud
-- these precomputed blocks are stored in `self.x_gauss`
+- if `--viewpoint_splitter` is not set:
+  - sibling directories `model1`, `model2`, ... are searched under the same parent directory
+  - each sibling block gets its own camera lists and its own GaussianModel initialized from that block's point cloud
+- if `--viewpoint_splitter` is set:
+  - the train-camera set of `model0` is partitioned into `xtend + 1` viewpoint groups by importing the requested splitter module
+  - the first partition becomes the active base scene
+  - later partitions become extension blocks
+  - a sub-point-cloud is assigned to each partition by nearest camera-cluster center, with a deterministic forward-ray fallback if a partition receives no points
+- all precomputed extension blocks are stored in `self.x_gauss`
 - the matching camera sets are stored in `self.extension_set`
 
 This means split initialization is eager, not lazy.
+
+### Dynamic viewpoint splitter interface
+
+The splitter path is intentionally externalized instead of being hard-coded in `Scene`.
+
+Current interface:
+
+- `--viewpoint_splitter <module_name>`
+- `--viewpoint_splitter_config '<json object>'`
+
+Resolution rules:
+
+- bare names such as `pose_kmeans` resolve under `scene.viewpoint_splitters`
+- fully qualified module names are also accepted
+- the imported module must expose:
+  - `partition_viewpoints(train_cameras, num_partitions, config)`
+
+The default implementation added now is:
+
+- `scene.viewpoint_splitters.pose_kmeans`
+
+It clusters viewpoints by pose using:
+
+- camera-center position
+- camera forward direction
+
+Current tunables in `viewpoint_splitter_config`:
+
+- `position_scale`
+- `forward_scale`
+- `max_iterations`
 
 When EDGS is disabled:
 
@@ -161,6 +198,7 @@ Later in training, when the split extension trigger fires:
 
 - cameras from the next extension block are appended into the active train and test camera sets
 - the corresponding prebuilt Gaussian block is merged into the active GaussianModel using `concat_new_gaussian(...)`
+- exposure mappings are extended so appended cameras can use the live model's exposure table
 
 `concat_new_gaussian(...)` does not just copy tensors directly.
 
@@ -181,6 +219,7 @@ Initialization decides:
 
 - which Gaussians exist at the start
 - which additional Gaussian blocks are available for split extension
+- how one scene can be partitioned into appendable viewpoint submodels when a dynamic splitter is active
 
 LoD decides:
 
@@ -189,6 +228,29 @@ LoD decides:
 The current LoD path does not modify initialization.
 
 It only changes viewpoint/image scale selection during training.
+
+### Split-aware LoD behavior
+
+For non-split runs, naive LoD still behaves as a single global schedule over the configured `resolution_scales`.
+
+For split runs, the active behavior is now block-aware:
+
+- effective LoD stage length is derived from:
+  - `splitter_itr // len(resolution_scales)`
+- each appended viewpoint block keeps its own LoD state
+- older viewpoint blocks keep the highest resolution scale they had already reached
+- newly appended viewpoint blocks start again from the coarsest configured LoD scale
+- later promotions only advance the newest active block
+- densification stays enabled until at least the final append iteration, even if `densify_until_iter` would otherwise stop earlier
+
+This means split append no longer resets all older viewpoints back through one shared LoD phase.
+
+Instead, the semantics are:
+
+- append a new block
+- preserve old blocks at their best promoted scale
+- start the new block coarse
+- promote only that new block forward over time
 
 ## Current EDGS arguments
 
@@ -203,6 +265,8 @@ It only changes viewpoint/image scale selection during training.
 - `--edgs_roma_model`
 - `--edgs_add_sfm_init`
 - `--edgs_init_extensions` / `--no-edgs_init_extensions`
+- `--viewpoint_splitter`
+- `--viewpoint_splitter_config`
 
 `run_exp.py` exposes the same family so the experiment runner can launch EDGS-enabled runs directly.
 
@@ -237,7 +301,8 @@ If you run `frankenstein_base` today, the initialization is:
 The EDGS integration now touches exactly these seams:
 
 - base block initialization in `Scene.__init__(...)`
-- extension block initialization in `Scene.create_2nd_set(...)`
+- extension block initialization in `Scene._create_extension_set(...)`
+- viewpoint-partition policy import through `scene.viewpoint_splitters.*`
 - optional pruning of original SfM points after RoMa append in `edgs_init.py`
 
 Those are the places where the point-cloud seed is established and optionally augmented by EDGS.

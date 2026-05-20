@@ -21,6 +21,7 @@ Current additions on top of the upstream baseline:
 - `train_nomask.py` accepts `edgs_*` arguments and forwards them into scene construction
 - `edgs_init.py` imports the EDGS correspondence initializer and applies it locally
 - split extension blocks can also use EDGS initialization
+- split extension blocks can now be generated dynamically from one camera set through a pluggable viewpoint splitter
 - runtime logging now records EDGS base-block and split-extension initialization timing
 
 Important current limitation:
@@ -73,6 +74,30 @@ For split scenes:
 
 - `model0` can use EDGS initialization
 - sibling extension blocks can also use EDGS initialization when `--edgs_init_extensions` is enabled
+- split blocks can come either from legacy sibling `model1`, `model2`, ... folders or from a dynamic viewpoint partitioner
+
+### Dynamic viewpoint splitting
+
+When `xtend > 0`, the scene can now build extension blocks from the active train-camera set instead of requiring pre-split `modelN` folders.
+
+The active partition policy is imported by module name:
+
+- `--viewpoint_splitter pose_kmeans`
+- `--viewpoint_splitter scene.viewpoint_splitters.pose_kmeans`
+
+The default implementation clusters viewpoints by pose using camera-center position plus forward direction.
+
+Partition behavior is configured through a JSON object:
+
+- `--viewpoint_splitter_config '{"position_scale": 1.0, "forward_scale": 0.5, "max_iterations": 32}'`
+
+Current semantics:
+
+- the base partition is trained first
+- each later partition becomes one extension block
+- `scene.extend()` appends the next block into the live Gaussian model
+- the existing EDGS initialization and naive LoD reset logic then runs on that appended block as before
+- if `--viewpoint_splitter` is omitted, the old sibling-`modelN` extension path stays active
 
 ### Relevant arguments
 
@@ -87,6 +112,8 @@ For split scenes:
 - `--edgs_roma_model`
 - `--edgs_add_sfm_init`
 - `--edgs_init_extensions` / `--no-edgs_init_extensions`
+- `--viewpoint_splitter`
+- `--viewpoint_splitter_config`
 
 `run_exp.py` exposes the same controls for experiment launches.
 

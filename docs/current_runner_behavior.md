@@ -10,6 +10,7 @@ It is the runner handoff reference for:
 - comparison-matrix launch behavior
 - LoD scale semantics
 - split-scene handling
+- dynamic viewpoint-split handling
 - EDGS initialization toggles
 - densification toggles
 - W&B grouping behavior
@@ -93,6 +94,40 @@ For the split scene:
 
 - the runner infers `xtend = N - 1`
 - it derives `splitter_itr = final_extension_iteration // (N - 1)`
+
+## Dynamic viewpoint splitting
+
+The training entrypoint now also supports a dynamic split path that does not require pre-split sibling `modelN` folders.
+
+Current controls are passed directly to `train_nomask.py`:
+
+- `--viewpoint_splitter`
+- `--viewpoint_splitter_config`
+
+Semantics:
+
+- if `--viewpoint_splitter` is omitted, split behavior stays on the legacy sibling-folder path
+- if `--viewpoint_splitter` is set, `Scene(...)` partitions the base train-camera set into `xtend + 1` viewpoint groups
+- the first partition is trained as the base block
+- later partitions are appended through the existing `scene.extend()` path
+
+When split append is active, LoD is also block-aware:
+
+- effective per-block LoD stage length is derived inside `train_nomask.py` as `splitter_itr // len(resolution_scales)`
+- older viewpoint blocks keep the highest resolution scale they have already reached
+- newly appended viewpoint blocks start at the coarsest configured LoD scale and promote independently
+- split runs treat `densify_until_iter` as a minimum cutoff; if needed, densification is extended through the final append iteration
+
+So the runner-level `splitter_itr` now affects two things:
+
+- when the next viewpoint block is appended
+- how long each per-block LoD promotion stage lasts in split mode
+
+Current default implementation available in-tree:
+
+- `pose_kmeans`
+
+This keeps the partition criterion replaceable by module import rather than embedding one fixed policy in the trainer or runner.
 
 ## Naming
 

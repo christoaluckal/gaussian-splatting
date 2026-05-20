@@ -62,6 +62,8 @@ class ModelParams(ParamGroup):
         self.packet_flip_lr = False
         self.packet_flip_ud = False
         self.match_resolution = False
+        self.viewpoint_splitter = ""
+        self.viewpoint_splitter_config = "{}"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

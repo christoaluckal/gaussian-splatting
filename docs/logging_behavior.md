@@ -58,6 +58,8 @@ Interpretation notes:
 
 - `train/lod_scale` is the actual sampled training scale, not just the configured experiment scale list
 - for split runs, the active Gaussian count can jump when `scene.extend()` merges the next block
+- this applies both to legacy sibling-folder extension blocks and to dynamic viewpoint-cluster extension blocks
+- for split runs, `train/lod_stage_idx` is now the stage index of the sampled viewpoint block, not one global LoD stage shared by every block
 
 ## W&B evaluation metrics
 
@@ -231,6 +233,7 @@ So for split runs:
 
 - `runtime/edgs_extensions_init_time_sec` means "time spent prebuilding extension Gaussian blocks with EDGS"
 - it does not mean "time spent extending the active model during training"
+- extension blocks may come either from sibling `modelN` folders or from a configured viewpoint splitter over one scene
 
 ## Comparison-matrix logging behavior
 

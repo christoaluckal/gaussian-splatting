@@ -168,7 +168,44 @@ def _resolve_naive_lod_scale(
     return stage_idx, lod_scales[stage_idx]
 
 
-def _maybe_update_naive_lod_scale(iteration, lod_state, naive_lod_stage_iterations):
+def _build_viewpoint_block(start_idx, end_idx, lod_scales, phase_start_iteration, scale_idx=0):
+    return {
+        'start_idx': start_idx,
+        'end_idx': end_idx,
+        'lod_scales': lod_scales,
+        'current_scale_idx': scale_idx,
+        'phase_start_iteration': phase_start_iteration,
+    }
+
+
+def _find_viewpoint_block(blocks, viewpoint_idx):
+    for block in blocks:
+        if block['start_idx'] <= viewpoint_idx <= block['end_idx']:
+            return block
+    raise IndexError(f'No viewpoint block found for viewpoint index {viewpoint_idx}.')
+
+
+def _resolve_effective_densify_until_iter(
+    densify,
+    densify_until_iter,
+    *,
+    def_flag,
+    splitter_itr,
+    extension_count,
+):
+    if not densify:
+        return 0
+
+    effective_densify_until_iter = densify_until_iter
+    if not def_flag and splitter_itr > 0 and extension_count > 0:
+        # Keep densification alive through the iteration that appends the last block.
+        last_append_iteration = splitter_itr * extension_count
+        effective_densify_until_iter = max(effective_densify_until_iter, last_append_iteration + 1)
+
+    return effective_densify_until_iter
+
+
+def _maybe_update_naive_lod_scale(iteration, lod_state, naive_lod_stage_iterations, log_prefix='Promoting naive LoD training'):
     next_scale_idx, next_scale = _resolve_naive_lod_scale(
         iteration,
         lod_state['lod_scales'],
@@ -178,22 +215,23 @@ def _maybe_update_naive_lod_scale(iteration, lod_state, naive_lod_stage_iteratio
     if next_scale_idx != lod_state['current_scale_idx']:
         previous_scale = lod_state['lod_scales'][lod_state['current_scale_idx']]
         print(
-            f"\n[ITER {iteration}] Promoting naive LoD training from resolution scale "
+            f"\n[ITER {iteration}] {log_prefix} from resolution scale "
             f"{previous_scale} to {next_scale}"
         )
         lod_state['current_scale_idx'] = next_scale_idx
-    return next_scale
+    return next_scale_idx, next_scale
 
 
-def _reset_naive_lod_phase(next_iteration, lod_state):
+def _reset_naive_lod_phase(next_iteration, lod_state, log_message='Resetting naive LoD training to resolution scale'):
+    reset_scale_idx = 0
     lod_state['phase_start_iteration'] = next_iteration
-    lod_state['current_scale_idx'] = 0
-    reset_scale = lod_state['lod_scales'][0]
+    lod_state['current_scale_idx'] = reset_scale_idx
+    reset_scale = lod_state['lod_scales'][reset_scale_idx]
     print(
-        f"\n[ITER {next_iteration}] Resetting naive LoD training to resolution scale "
+        f"\n[ITER {next_iteration}] {log_message} "
         f"{reset_scale} for newly added viewpoints"
     )
-    return reset_scale
+    return reset_scale_idx, reset_scale
 
 
 def _initialize_csv_logger(csv_path, fieldnames):
@@ -606,7 +644,14 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     use_sparse_adam = opt.optimizer_type == 'sparse_adam' and SPARSE_ADAM_AVAILABLE
-    effective_densify_until_iter = opt.densify_until_iter if densify else 0
+    extension_count = len(getattr(scene, 'extension_set', []))
+    effective_densify_until_iter = _resolve_effective_densify_until_iter(
+        densify,
+        opt.densify_until_iter,
+        def_flag=def_flag,
+        splitter_itr=splitter_itr,
+        extension_count=extension_count,
+    )
     depth_l1_weight = get_expon_lr_func(
         opt.depth_l1_weight_init,
         opt.depth_l1_weight_final,
@@ -615,12 +660,21 @@ def training(
 
     viewpoint_dict, viewpoint_indices = _build_viewpoint_stacks(scene, resolution_scales)
     _log_loaded_resolution_summary(scene, resolution_scales, finest_scale)
-    active_viewpoint_start_idx = 0
     total_viewpoint_count = len(viewpoint_dict[finest_scale])
+    effective_naive_lod_stage_iterations = naive_lod_stage_iterations
+    if not def_flag and splitter_itr > 0 and len(lod_scales) > 0:
+        derived_stage_iterations = max(1, splitter_itr // len(lod_scales))
+        if derived_stage_iterations != naive_lod_stage_iterations:
+            print(
+                'Overriding naive LoD stage length for split training: '
+                f'{naive_lod_stage_iterations} -> {derived_stage_iterations} '
+                f'(splitter_itr={splitter_itr}, levels={len(lod_scales)}).'
+            )
+        effective_naive_lod_stage_iterations = derived_stage_iterations
     initial_scale_idx, initial_scale = _resolve_naive_lod_scale(
         max(first_iter, 1),
         lod_scales,
-        naive_lod_stage_iterations,
+        effective_naive_lod_stage_iterations,
         phase_start_iteration=1,
     )
     lod_state = {
@@ -628,9 +682,18 @@ def training(
         'current_scale_idx': initial_scale_idx,
         'phase_start_iteration': 1,
     }
+    viewpoint_blocks = [
+        _build_viewpoint_block(
+            0,
+            max(total_viewpoint_count - 1, 0),
+            lod_scales,
+            phase_start_iteration=1,
+            scale_idx=initial_scale_idx,
+        )
+    ]
     print(
         'Using naive LoD schedule with stage length '
-        f'{naive_lod_stage_iterations} over scales {lod_scales}. '
+        f'{effective_naive_lod_stage_iterations} over scales {lod_scales}. '
         f'Starting at scale {initial_scale}.'
     )
     print(
@@ -638,6 +701,12 @@ def training(
         f'{"enabled" if densify else "disabled"}; '
         f'effective densify_until_iter={effective_densify_until_iter}.'
     )
+    if effective_densify_until_iter != (opt.densify_until_iter if densify else 0):
+        print(
+            'Extended densification cutoff for split training so it remains active '
+            f'through the final append iteration (base cutoff={opt.densify_until_iter}, '
+            f'extensions={extension_count}, splitter_itr={splitter_itr}).'
+        )
     print(f'Initialization time: {initialization_time_sec:.2f}s.')
 
     if fixed_wandb_eval_view is None:
@@ -876,12 +945,15 @@ def training(
                 viewpoint_indices = _refill_viewpoint_indices(total_viewpoint_count)
 
             viewpoint_idx = viewpoint_indices.pop(randint(0, len(viewpoint_indices) - 1))
-            current_scale = _maybe_update_naive_lod_scale(
+            active_block = viewpoint_blocks[-1]
+            _maybe_update_naive_lod_scale(
                 iteration,
-                lod_state,
-                naive_lod_stage_iterations,
+                active_block,
+                effective_naive_lod_stage_iterations,
+                log_prefix='Promoting active viewpoint block from resolution scale',
             )
-            render_scale = finest_scale if viewpoint_idx < active_viewpoint_start_idx else current_scale
+            viewpoint_block = _find_viewpoint_block(viewpoint_blocks, viewpoint_idx)
+            render_scale = viewpoint_block['lod_scales'][viewpoint_block['current_scale_idx']]
             viewpoint_cam = viewpoint_dict[render_scale][viewpoint_idx]
 
             if (iteration - 1) == debug_from:
@@ -967,7 +1039,7 @@ def training(
                         'total_loss': loss.item(),
                         'depth_loss': Ll1depth,
                         'lod_scale': render_scale,
-                        'lod_stage_idx': lod_state['current_scale_idx'],
+                        'lod_stage_idx': viewpoint_block['current_scale_idx'],
                         'num_gaussians': gaussians.get_xyz.shape[0],
                         'iter_time_ms': iter_time_ms,
                     },
@@ -1018,7 +1090,7 @@ def training(
                             'train/total_loss': loss.item(),
                             'train/depth_loss': Ll1depth,
                             'train/lod_scale': render_scale,
-                            'train/lod_stage_idx': lod_state['current_scale_idx'],
+                            'train/lod_stage_idx': viewpoint_block['current_scale_idx'],
                             'train/num_gaussians': gaussians.get_xyz.shape[0],
                         },
                         step=iteration,
@@ -1075,16 +1147,19 @@ def training(
                         gaussians,
                         radii,
                         iteration,
-                        opt.densify_until_iter,
+                        effective_densify_until_iter,
                     )
 
-                if edgs_train_recipe and iteration < opt.densify_until_iter and iteration % 10 == 0:
+                if (
+                    edgs_train_recipe
+                    and iteration < effective_densify_until_iter
+                    and iteration % 10 == 0
+                ):
                     _apply_edgs_opacity_decay(gaussians)
 
                 if iteration % splitter_itr == 0 and not def_flag:
                     print('Adding new gaussians')
                     previous_num_viewpoints = len(viewpoint_dict[finest_scale])
-                    previous_active_viewpoint_start_idx = active_viewpoint_start_idx
                     scene.extend()
                     viewpoint_dict, _ = _build_viewpoint_stacks(scene, resolution_scales)
                     new_total_viewpoints = len(viewpoint_dict[finest_scale])
@@ -1094,19 +1169,34 @@ def training(
                         new_total_viewpoints - previous_num_viewpoints,
                     )
                     if new_viewpoint_count > 0:
-                        active_viewpoint_start_idx = new_viewpoint_start_idx
                         total_viewpoint_count = new_total_viewpoints
                         viewpoint_indices = _refill_viewpoint_indices(total_viewpoint_count)
-                        _reset_naive_lod_phase(iteration + 1, lod_state)
+                        reset_scale_idx, reset_scale = _reset_naive_lod_phase(
+                            iteration + 1,
+                            lod_state,
+                            log_message='Starting appended viewpoint block at resolution scale',
+                        )
+                        viewpoint_blocks.append(
+                            _build_viewpoint_block(
+                                new_viewpoint_start_idx,
+                                new_total_viewpoints - 1,
+                                lod_scales,
+                                phase_start_iteration=iteration + 1,
+                                scale_idx=reset_scale_idx,
+                            )
+                        )
                         print(
                             'Sampling uniformly across all viewpoint indices with new active block:',
-                            active_viewpoint_start_idx,
+                            new_viewpoint_start_idx,
                             'to',
                             new_total_viewpoints - 1,
                         )
+                        print(
+                            'Older viewpoint blocks keep their highest promoted scale; '
+                            f'new block starts at scale {reset_scale}.'
+                        )
                         print('New Viewpoint Count:', new_viewpoint_count)
                     else:
-                        active_viewpoint_start_idx = previous_active_viewpoint_start_idx
                         total_viewpoint_count = previous_num_viewpoints
                         print('No new viewpoints were added by this extension step.')
 

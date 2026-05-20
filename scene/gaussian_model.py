@@ -139,6 +139,47 @@ class GaussianModel:
             return self._exposure[self.exposure_mapping[image_name]]
         else:
             return self.pretrained_exposures[image_name]
+
+    def extend_exposure_mapping(self, cam_infos):
+        if not hasattr(self, "exposure_mapping"):
+            self.exposure_mapping = {}
+        if not hasattr(self, "_exposure"):
+            base_exposure = torch.eye(3, 4, device="cuda")[None]
+            self._exposure = nn.Parameter(base_exposure.requires_grad_(True))
+            self.exposure_mapping = {}
+
+        new_names = []
+        for cam_info in cam_infos:
+            if cam_info.image_name in self.exposure_mapping:
+                continue
+            self.exposure_mapping[cam_info.image_name] = len(self.exposure_mapping)
+            new_names.append(cam_info.image_name)
+
+        if not new_names:
+            return
+
+        extension_exposure = torch.eye(3, 4, device=self._exposure.device)[None].repeat(len(new_names), 1, 1)
+        combined_exposure = torch.cat((self._exposure.detach(), extension_exposure), dim=0)
+
+        if hasattr(self, "exposure_optimizer") and self.exposure_optimizer is not None:
+            group = self.exposure_optimizer.param_groups[0]
+            stored_state = self.exposure_optimizer.state.get(group["params"][0], None)
+            if stored_state is not None:
+                stored_state["exp_avg"] = torch.cat(
+                    (stored_state["exp_avg"], torch.zeros_like(extension_exposure)),
+                    dim=0,
+                )
+                stored_state["exp_avg_sq"] = torch.cat(
+                    (stored_state["exp_avg_sq"], torch.zeros_like(extension_exposure)),
+                    dim=0,
+                )
+                del self.exposure_optimizer.state[group["params"][0]]
+            group["params"][0] = nn.Parameter(combined_exposure.requires_grad_(True))
+            if stored_state is not None:
+                self.exposure_optimizer.state[group["params"][0]] = stored_state
+            self._exposure = group["params"][0]
+        else:
+            self._exposure = nn.Parameter(combined_exposure.requires_grad_(True))
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
