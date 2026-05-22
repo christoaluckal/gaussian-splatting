@@ -242,6 +242,7 @@ For split runs, the active behavior is now block-aware:
 - newly appended viewpoint blocks start again from the coarsest configured LoD scale
 - later promotions only advance the newest active block
 - densification stays enabled until at least the final append iteration, even if `densify_until_iter` would otherwise stop earlier
+- after the final append, split mode keeps a short extra densification window of about `2000` iterations, rounded up to a multiple of `densification_interval`
 
 This means split append no longer resets all older viewpoints back through one shared LoD phase.
 

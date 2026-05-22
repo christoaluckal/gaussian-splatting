@@ -64,6 +64,7 @@ class ModelParams(ParamGroup):
         self.match_resolution = False
         self.viewpoint_splitter = ""
         self.viewpoint_splitter_config = "{}"
+        self.edgs_cache_root = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

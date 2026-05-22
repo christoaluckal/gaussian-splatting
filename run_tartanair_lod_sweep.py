@@ -176,8 +176,8 @@ def main() -> None:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--train-script", default="train_nomask.py")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
-    parser.add_argument("--grad-start", type=float, default=1e-4)
-    parser.add_argument("--grad-end", type=float, default=1e-3)
+    parser.add_argument("--grad-start", type=float, default=1e-3)
+    parser.add_argument("--grad-end", type=float, default=1e-4)
     parser.add_argument("--grad-steps", type=int, default=4)
     parser.add_argument(
         "--schedules",

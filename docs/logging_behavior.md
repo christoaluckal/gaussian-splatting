@@ -201,6 +201,44 @@ Interpretation:
 - `iteration` stores per-iteration GPU memory snapshots
 - `training_complete` stores final total training time
 
+## EDGS Cache Timing Semantics
+
+Some modern sweep workflows now use:
+
+- `--edgs_cache_root`
+
+When that cache is active, repeated runs may load preinitialized EDGS Gaussian blocks from cache instead of recomputing EDGS initialization.
+
+This changes the interpretation of initialization-related time metrics:
+
+- `runtime/edgs_base_init_time_sec`
+- `runtime/edgs_extensions_init_time_sec`
+
+Current semantics:
+
+- on a cold run with no cache hit, these fields record real EDGS initialization time
+- on a cache hit, these fields are usually `0` because EDGS initialization was skipped and cached Gaussian state was loaded instead
+
+This also affects broader time metrics:
+
+- `runtime/scene_load_time_sec` can decrease on cache hits because repeated EDGS work is skipped
+- `end_to_end_time_sec` in collated reports can therefore also decrease on cache hits
+- `runtime/total_training_time_sec` remains the closest metric to optimization-loop-only time because it excludes scene setup and initialization
+
+So there are now two valid timing interpretations:
+
+- practical throughput:
+  - include cache effects
+  - compare `scene_load_time_sec` and `end_to_end_time_sec`
+- cold-start comparison:
+  - ignore cache effects
+  - compare `total_training_time_sec`, or compare only uncached runs
+
+This is important for matrix reports:
+
+- cached runs are valid for "how fast can I repeat this sweep in practice?"
+- they are not identical to cold-start initialization benchmarks
+
 ## Collated report
 
 The local report generator is:

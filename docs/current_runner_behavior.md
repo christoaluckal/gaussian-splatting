@@ -116,7 +116,7 @@ When split append is active, LoD is also block-aware:
 - effective per-block LoD stage length is derived inside `train_nomask.py` as `splitter_itr // len(resolution_scales)`
 - older viewpoint blocks keep the highest resolution scale they have already reached
 - newly appended viewpoint blocks start at the coarsest configured LoD scale and promote independently
-- split runs treat `densify_until_iter` as a minimum cutoff; if needed, densification is extended through the final append iteration
+- split runs treat `densify_until_iter` as a minimum cutoff; if needed, densification is extended through the final append iteration and then kept alive for a short post-append buffer
 
 So the runner-level `splitter_itr` now affects two things:
 
@@ -128,6 +128,101 @@ Current default implementation available in-tree:
 - `pose_kmeans`
 
 This keeps the partition criterion replaceable by module import rather than embedding one fixed policy in the trainer or runner.
+
+## Splitter Matrix Runner
+
+There is now a dedicated matrix runner for splitter-iteration and cluster-count sweeps:
+
+- `run_tartanair_splitter_matrix.py`
+
+Its default purpose is different from the older sweep runners:
+
+- hold `densify_grad_threshold` fixed at `4e-4`
+- hold total iterations at `40000`
+- hold `densify_until_iter` at `30000`
+- sweep `cluster_count` from `2` through `10`
+- sweep `splitter_itr` from `1000` through `15000`
+- launch both:
+  - split baseline
+  - split LoD
+- keep one EDGS non-split non-LoD control
+
+Default output layout:
+
+- run outputs:
+  - `output/tartan_splitter_matrix_runs`
+- EDGS cache:
+  - `output/tartan_splitter_matrix_cache`
+
+Default launcher behavior:
+
+- resume mode is enabled by default
+- rerunning the same command skips run directories that already look completed
+- interrupting with `Ctrl+C` stops the current launch loop cleanly
+- rerunning the same command resumes unfinished jobs from the same output root
+
+The matrix runner also builds local summary artifacts over completed runs:
+
+- `splitter_matrix_summary.csv`
+- `splitter_matrix_report.md`
+- `splitter_matrix_heatmaps.png`
+
+The heatmap figure uses:
+
+- X axis: `splitter_itr`
+- Y axis: `cluster_count`
+- separate baseline and LoD rows
+- separate metric panels for:
+  - final Gaussian count
+  - final PSNR
+  - end-to-end time
+
+This runner is intended to answer:
+
+- which `splitter_itr` is best
+- which `cluster_count` is best
+- whether LoD helps or hurts at each split geometry
+
+The matrix runner also applies a dynamic feasibility filter before launching split jobs.
+
+Current rule:
+
+- `cluster_count * splitter_itr + post_append_densify_buffer(densification_interval) <= iterations`
+
+Where:
+
+- `post_append_densify_buffer(densification_interval)` is:
+  - at least `2000` iterations
+  - and rounded up to a multiple of `densification_interval`
+
+This means the runner skips combinations that cannot both:
+
+- append all viewpoint blocks within the configured total iteration budget
+- leave a short post-append tail so the final block still gets some densification time before training ends
+
+So the invalidity check is runtime-driven from the current CLI values, not hardcoded to one particular pair such as `cluster_count=10` and `splitter_itr=10000`.
+
+## EDGS Cache Reuse
+
+The matrix runner now passes:
+
+- `--edgs_cache_root`
+
+This enables scene-level reuse of EDGS-initialized Gaussian blocks across repeated runs that share the same split geometry.
+
+Current cache semantics:
+
+- cache reuse is keyed by:
+  - `source_path`
+  - `xtend`
+  - `viewpoint_splitter`
+  - `viewpoint_splitter_config`
+  - reference resolution scale
+  - EDGS configuration
+- for a fixed `cluster_count`, different `splitter_itr` values reuse the same cached EDGS base and extension Gaussian blocks
+- baseline and LoD runs also reuse the same cached EDGS initialization when their split geometry matches
+
+This means the cache is primarily a practical throughput optimization for matrix-style repeated runs, not a change to the training objective.
 
 ## Naming
 

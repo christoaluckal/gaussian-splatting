@@ -13,6 +13,7 @@ import json
 import os
 import random
 import time
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,7 @@ class Scene:
     ):
         self.model_path = args.model_path
         path = Path(args.source_path)
+        self.source_path = path
         self.model_paths = path.parent.absolute()
         self.loaded_iter = None
         self.gaussians = gaussians
@@ -57,6 +59,7 @@ class Scene:
         self.viewpoint_splitter_config = self._parse_viewpoint_splitter_config(
             getattr(args, "viewpoint_splitter_config", "{}")
         )
+        self.edgs_cache_root = getattr(args, "edgs_cache_root", "")
         self.runtime_stats = {
             "edgs_base_init_time_sec": 0.0,
             "edgs_base_init_gpu_memory_mb": 0.0,
@@ -111,6 +114,7 @@ class Scene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         reference_resolution_scale = resolution_scales[0]
+        self._reference_resolution_scale = reference_resolution_scale
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(
@@ -142,14 +146,28 @@ class Scene:
                 args.train_test_exp,
             )
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
-            if self._should_apply_edgs_init_to_base():
-                self.gaussians.training_setup(self.training_args)
-                self._apply_timed_edgs_initialization(
+            base_cache_path = self._edgs_cache_file("base", 0)
+            if (
+                self._should_apply_edgs_init_to_base()
+                and base_cache_path is not None
+                and self._load_cached_gaussian(
                     self.gaussians,
-                    self.train_cameras[reference_resolution_scale],
-                    phase="base",
+                    base_cache_path,
+                    args.train_test_exp,
+                    scene_info.train_cameras,
                 )
+            ):
+                print(f"Loaded cached EDGS base Gaussian from {base_cache_path}")
+            else:
+                self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
+                if self._should_apply_edgs_init_to_base():
+                    self.gaussians.training_setup(self.training_args)
+                    self._apply_timed_edgs_initialization(
+                        self.gaussians,
+                        self.train_cameras[reference_resolution_scale],
+                        phase="base",
+                    )
+                    self._save_cached_gaussian(self.gaussians, base_cache_path)
 
         for extension_idx, extension_scene_info in enumerate(extension_scene_infos, start=1):
             extension_set, extension_gaussian = self._create_extension_set(
@@ -207,6 +225,51 @@ class Scene:
         if not isinstance(parsed, dict):
             raise ValueError("viewpoint_splitter_config must decode to a JSON object.")
         return parsed
+
+    def _build_edgs_cache_key(self):
+        if not self.edgs_cache_root:
+            return None
+        payload = {
+            "source_path": self.source_path.as_posix(),
+            "xtend": self.xtend,
+            "viewpoint_splitter": self.viewpoint_splitter,
+            "viewpoint_splitter_config": self.viewpoint_splitter_config,
+            "reference_resolution_scale": getattr(self, "_reference_resolution_scale", None),
+            "edgs_cfg": vars(self.edgs_init_cfg) if self.edgs_init_cfg is not None else None,
+        }
+        digest = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return digest
+
+    def _edgs_cache_dir(self):
+        cache_key = self._build_edgs_cache_key()
+        if cache_key is None:
+            return None
+        return Path(self.edgs_cache_root) / cache_key
+
+    def _edgs_cache_file(self, phase, index):
+        cache_dir = self._edgs_cache_dir()
+        if cache_dir is None:
+            return None
+        if phase == "base":
+            return cache_dir / "base_gaussian.ply"
+        if phase == "extension":
+            return cache_dir / f"extension_{index}_gaussian.ply"
+        raise ValueError(f"Unsupported EDGS cache phase: {phase}")
+
+    def _load_cached_gaussian(self, gaussians, cache_path, use_train_test_exp, cam_infos):
+        if cache_path is None or not cache_path.exists():
+            return False
+        gaussians.load_ply(str(cache_path), use_train_test_exp)
+        gaussians.rebuild_exposure_from_cam_infos(cam_infos)
+        return True
+
+    def _save_cached_gaussian(self, gaussians, cache_path):
+        if cache_path is None:
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        gaussians.save_ply(str(cache_path))
 
     def _legacy_extension_exists(self, index):
         return os.path.exists(os.path.join(self.model_paths, f"model{index}", "sparse"))
@@ -476,18 +539,32 @@ class Scene:
             )
 
         extension_gaussian = GaussianModel(self.gaussians.max_sh_degree, self.gaussians.optimizer_type)
-        extension_gaussian.create_from_pcd(
-            extension_scene_info["point_cloud"],
-            extension_scene_info["train_cameras"],
-            extension_scene_info["nerf_normalization"]["radius"],
-        )
-        if self._should_apply_edgs_init_to_extensions():
-            extension_gaussian.training_setup(self.training_args)
-            self._apply_timed_edgs_initialization(
+        extension_cache_path = self._edgs_cache_file("extension", index)
+        if (
+            self._should_apply_edgs_init_to_extensions()
+            and extension_cache_path is not None
+            and self._load_cached_gaussian(
                 extension_gaussian,
-                new_train_cameras[reference_resolution_scale],
-                phase="extension",
+                extension_cache_path,
+                args.train_test_exp,
+                extension_scene_info["train_cameras"],
             )
+        ):
+            print(f"Loaded cached EDGS extension Gaussian from {extension_cache_path}")
+        else:
+            extension_gaussian.create_from_pcd(
+                extension_scene_info["point_cloud"],
+                extension_scene_info["train_cameras"],
+                extension_scene_info["nerf_normalization"]["radius"],
+            )
+            if self._should_apply_edgs_init_to_extensions():
+                extension_gaussian.training_setup(self.training_args)
+                self._apply_timed_edgs_initialization(
+                    extension_gaussian,
+                    new_train_cameras[reference_resolution_scale],
+                    phase="extension",
+                )
+                self._save_cached_gaussian(extension_gaussian, extension_cache_path)
 
         return [new_train_cameras, new_test_cameras], extension_gaussian
 

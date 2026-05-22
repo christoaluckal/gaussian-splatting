@@ -192,15 +192,26 @@ def _resolve_effective_densify_until_iter(
     def_flag,
     splitter_itr,
     extension_count,
+    densification_interval,
 ):
     if not densify:
         return 0
 
     effective_densify_until_iter = densify_until_iter
     if not def_flag and splitter_itr > 0 and extension_count > 0:
-        # Keep densification alive through the iteration that appends the last block.
+        # Keep densification alive through the final append iteration, plus a
+        # short post-append window aligned to the densification cadence.
         last_append_iteration = splitter_itr * extension_count
-        effective_densify_until_iter = max(effective_densify_until_iter, last_append_iteration + 1)
+        post_append_buffer = max(2000, densification_interval)
+        if densification_interval > 0:
+            post_append_buffer = (
+                ((post_append_buffer + densification_interval - 1) // densification_interval)
+                * densification_interval
+            )
+        effective_densify_until_iter = max(
+            effective_densify_until_iter,
+            last_append_iteration + post_append_buffer + 1,
+        )
 
     return effective_densify_until_iter
 
@@ -651,6 +662,7 @@ def training(
         def_flag=def_flag,
         splitter_itr=splitter_itr,
         extension_count=extension_count,
+        densification_interval=opt.densification_interval,
     )
     depth_l1_weight = get_expon_lr_func(
         opt.depth_l1_weight_init,
@@ -704,8 +716,9 @@ def training(
     if effective_densify_until_iter != (opt.densify_until_iter if densify else 0):
         print(
             'Extended densification cutoff for split training so it remains active '
-            f'through the final append iteration (base cutoff={opt.densify_until_iter}, '
-            f'extensions={extension_count}, splitter_itr={splitter_itr}).'
+            'through the final append iteration plus a short post-append buffer '
+            f'(base cutoff={opt.densify_until_iter}, extensions={extension_count}, '
+            f'splitter_itr={splitter_itr}, densification_interval={opt.densification_interval}).'
         )
     print(f'Initialization time: {initialization_time_sec:.2f}s.')
 

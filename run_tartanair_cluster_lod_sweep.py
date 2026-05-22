@@ -229,8 +229,8 @@ def main() -> None:
     )
     parser.add_argument("--viewpoint-splitter", default=DEFAULT_VIEWPOINT_SPLITTER)
     parser.add_argument("--viewpoint-splitter-config", default=DEFAULT_VIEWPOINT_SPLITTER_CONFIG)
-    parser.add_argument("--grad-start", type=float, default=4e-4)
-    parser.add_argument("--grad-end", type=float, default=1e-3)
+    parser.add_argument("--grad-start", type=float, default=1e-3)
+    parser.add_argument("--grad-end", type=float, default=1e-4)
     parser.add_argument("--grad-steps", type=int, default=4)
     parser.add_argument(
         "--schedules",

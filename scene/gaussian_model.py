@@ -180,6 +180,14 @@ class GaussianModel:
             self._exposure = group["params"][0]
         else:
             self._exposure = nn.Parameter(combined_exposure.requires_grad_(True))
+
+    def rebuild_exposure_from_cam_infos(self, cam_infos):
+        image_names = [cam_info.image_name for cam_info in cam_infos]
+        self.exposure_mapping = {image_name: idx for idx, image_name in enumerate(image_names)}
+        self.pretrained_exposures = None
+        device = self._xyz.device if self._xyz.numel() > 0 else "cuda"
+        exposure = torch.eye(3, 4, device=device)[None].repeat(len(image_names), 1, 1)
+        self._exposure = nn.Parameter(exposure.requires_grad_(True))
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -379,6 +387,10 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.tmp_radii = torch.empty((0,), device="cuda")
 
         self.active_sh_degree = self.max_sh_degree
 
