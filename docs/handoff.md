@@ -2,7 +2,7 @@
 
 ## Scope
 
-This is the operational handoff for `frankenstein_base` as of March 30, 2026.
+This is the operational handoff for `frankenstein_base` as of June 10, 2026.
 
 It captures:
 
@@ -19,6 +19,8 @@ It captures:
 - naive LoD training via `train_nomask.py`
 - experiment launching via `run_exp.py`
 - 12-run comparison launches covering vanilla and EDGS branches
+- a focused TartanAir three-run sweep covering non-clustered vanilla,
+  three-cluster EDGS, and three-cluster EDGS+LoD
 - optional EDGS / RoMa initialization through explicit `edgs_*` flags
 - explicit `--densify` / `--no-densify`
 
@@ -295,3 +297,16 @@ conda run -n frankenstein python run_exp.py \
   --run_group full-comparison \
   --wandb_project edgs-lod
 ```
+
+Focused TartanAir comparison:
+
+```bash
+conda run -n frankenstein python \
+  run_tartanair_vanilla_edgs_lod_sweep.py
+```
+
+This runner defaults to the converted
+`CyberPunkDowntown_P0000` COLMAP scene, `1e-3` densification gradient
+threshold, and a new `tartanair-colmap-vanilla-edgs-lod` W&B project. Its
+vanilla job is non-clustered; only the two EDGS jobs use three dynamic
+viewpoint clusters. See `docs/tartanair_vanilla_edgs_lod_sweep.md`.

@@ -202,6 +202,46 @@ This means the runner skips combinations that cannot both:
 
 So the invalidity check is runtime-driven from the current CLI values, not hardcoded to one particular pair such as `cluster_count=10` and `splitter_itr=10000`.
 
+## Focused TartanAir Vanilla/EDGS/LoD Runner
+
+`run_tartanair_vanilla_edgs_lod_sweep.py` is the current focused runner for a
+three-job comparison on one converted TartanAir COLMAP scene.
+
+Its defaults are:
+
+- source: `../bags/tartanair_colmap_vanilla_full/CyberPunkDowntown_P0000`
+- iterations: `40000`
+- densify until: `30000`
+- densification gradient threshold: `1e-3`
+- W&B project: `tartanair-colmap-vanilla-edgs-lod`
+
+It launches:
+
+1. vanilla without EDGS, LoD, or clustering:
+   - `-x 0`
+   - `--default`
+   - resolution scale `2`
+2. EDGS without LoD:
+   - three dynamic viewpoint clusters
+   - splitter interval `10000`
+   - resolution scale `2`
+3. EDGS with LoD:
+   - the same three-cluster split geometry
+   - resolution scales `2 4 8`
+
+The vanilla job deliberately has no cluster split. Therefore:
+
+- vanilla versus EDGS measures a pipeline-level difference that includes
+  initialization and clustering
+- EDGS no-LoD versus EDGS LoD is the matched LoD comparison
+
+Resume is enabled by default. Completion requires both a
+`training_complete` runtime event and a final-iteration row in
+`train_metrics.csv`.
+
+See `tartanair_vanilla_edgs_lod_sweep.md` for the full runbook and override
+semantics.
+
 ## EDGS Cache Reuse
 
 The matrix runner now passes:

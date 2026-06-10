@@ -9,6 +9,7 @@ Current documents:
 - `openvins_edgs_proposal.md`: archived original project proposal and research framing.
 - `openvins_edgs_concerns.md`: archived concern log for roadmap-versus-implementation mismatches through early Phase 3.
 - `current_runner_behavior.md`: describes the copied `gaussian-splatting` runner and LoD behavior as it exists now.
+- `tartanair_vanilla_edgs_lod_sweep.md`: runbook and interpretation guide for the focused non-clustered vanilla, clustered EDGS, and clustered EDGS+LoD TartanAir sweep.
 - `colmap_splitter_behavior.md`: describes the current split-scene generation contract consumed by the runner.
 - `phase0_mapping_baseline.md`: freezes the mapper-side baseline for the OpenVINS roadmap and clarifies that split append is an internal precedent, not a required ROS input layout.
 - `phase2_packet_ingest_design.md`: describes the implemented packet-backed scene loader and fixed-pose Phase 2 mapper path.
